@@ -1,0 +1,136 @@
+.App {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  background-color: #282c34;
+  color: white;
+  box-sizing: border-box;
+}
+
+.App-header {
+  margin-bottom: 30px;
+}
+
+.App-header h1 {
+  font-size: 2rem;
+  margin: 0;
+  padding: 1rem 0;
+}
+
+main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 20px;
+}
+
+/* App container */
+.app-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  width: 100vw;
+  background-color: #1e1e1e;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+
+/* Terminal container */
+.terminal-container {
+  width: 1100px;
+  height: 600px;
+  background-color: #1a1a1a;
+  border-radius: 6px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  border: none;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+/* Terminal header */
+.terminal-header {
+  background-color: #f0f0f0;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+  position: relative;
+}
+
+/* Terminal title */
+.terminal-title {
+  font-size: 12px;
+  color: #333;
+  text-align: center;
+  flex-grow: 1;
+  margin: 0 auto;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: auto;
+  white-space: nowrap;
+}
+
+/* Terminal buttons container */
+.terminal-buttons {
+  display: flex;
+  gap: 6px;
+  z-index: 10;
+}
+
+/* Terminal buttons (close, minimize, maximize) */
+.terminal-button {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.terminal-button.close {
+  background-color: #ff5f56;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.terminal-button.minimize {
+  background-color: #ffbd2e;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.terminal-button.maximize {
+  background-color: #27c93f;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+/* Terminal body */
+.terminal-body {
+  flex-grow: 1;
+  background-color: #1a1b26;
+  padding: 0;
+  overflow: hidden;
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+/* Target the XTerm container to ensure proper layout */
+.terminal-body > div {
+  height: 100%;
+}
+

@@ -1,0 +1,78 @@
+body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background: #111111;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: fixed;
+  top: 0;
+  left: 0;
+}
+
+html {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  height: 100%;
+  width: 100%;
+  background: #111111;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  padding: 0;
+  overflow: hidden;
+  background: #111111;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* Make sure terminal fonts render properly */
+@font-face {
+  font-family: 'Terminal Font';
+  src: local('Menlo'), local('Monaco'), local('Consolas'), local('DejaVu Sans Mono'), local('monospace');
+}
+
+/* Hide XTerm scrollbar */
+.xterm-viewport {
+  scrollbar-width: none !important; /* Firefox */
+  -ms-overflow-style: none !important; /* IE and Edge */
+  overflow: -moz-scrollbars-none !important; /* Old Firefox */
+}
+
+.xterm-viewport::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
+/* Ensure proper height for terminal containers */
+.xterm {
+  height: 100%;
+}
+
+.xterm-screen {
+  height: 100%;
+}
+
+/* Reset default margin and padding for xterm elements */
+.xterm, .xterm-screen, .xterm-viewport {
+  margin: 0;
+  padding: 0;
+} 
