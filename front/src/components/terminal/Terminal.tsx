@@ -6,6 +6,7 @@ import { WebLinksAddon } from 'xterm-addon-web-links';
 import { terminalService } from '../../services/terminal.service';
 import { webSocketService } from '../../services/websocket.service';
 
+
 interface TerminalProps {
   initialCommand?: string;
 }
@@ -24,6 +25,7 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
   const [sshConnectionDetails, setSshConnectionDetails] = useState<any>(null);
   const [passwordBuffer, setPasswordBuffer] = useState<string>('');
   const [passwordMode, setPasswordMode] = useState<boolean>(false);
+  const [awaitingConfirmation, setAwaitingConfirmation] = useState<boolean>(false);
   
   // Main effect for setup and websocket connections
   useEffect(() => {
@@ -37,16 +39,36 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
 
     // 监听从服务器返回的消息
     const unsubscribeMessage = webSocketService.onMessage('terminalResponse', (message) => {
-      if (xtermRef.current && message.payload) {
-        // 在终端显示服务器返回的响应
-        xtermRef.current.write(`${message.payload.output}\r\n`);
-        
-        // 只有当明确不显示提示符时才不显示
-        // 这允许AI在转发命令到SSH之前显示解释，而不显示提示符
-        if (message.payload.showPrompt !== false) {
-          // 显示新的提示符
-          xtermRef.current.write(terminalService.getPrompt());
-        }
+      if (!message || !message.payload) return;
+      
+      const { output, success, analysisType, showPrompt = true, awaitingConfirmation: isAwaitingConfirmation = false } = message.payload;
+      
+      // 更新SSH路径
+      if (message.payload.path) {
+        terminalService.setPath(message.payload.path);
+      }
+      
+      // 显示终端输出
+      if (output) {
+        xtermRef.current.write(`${output}\r\n`);
+      }
+      
+      // 如果在等待确认，设置等待确认状态
+      if (isAwaitingConfirmation) {
+        setAwaitingConfirmation(true);
+        // 不显示提示符，等待用户确认
+        return;
+      } else if (awaitingConfirmation && analysisType === 'command_cancelled') {
+        // 如果用户取消了命令，清除等待确认状态
+        setAwaitingConfirmation(false);
+      } else {
+        // 其他情况，确保不处于等待确认状态
+        setAwaitingConfirmation(false);
+      }
+      
+      // 如果需要显示提示符，才显示
+      if (showPrompt) {
+        xtermRef.current.write(terminalService.getPrompt());
       }
     });
     
@@ -308,6 +330,64 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
           setPasswordBuffer(prev => prev + data);
           return;
         }
+      }
+      
+      // 特殊处理确认模式
+      if (awaitingConfirmation) {
+        // 检查是否是y或n的输入（不区分大小写）
+        const lowerChar = data.toLowerCase();
+        
+        if (lowerChar === 'y' || lowerChar === 'n') {
+          // 显示输入的字符
+          term.write(data);
+          // 自动换行
+          term.write('\r\n');
+          
+          // 立即发送确认响应
+          sendCommandToServer(lowerChar);
+          
+          // 清空输入并退出确认模式
+          setInputBuffer('');
+          setAwaitingConfirmation(false);
+          return;
+        } else if (isEnter) {
+          // 如果按下回车，根据已输入的内容确认，若没有输入则默认取消
+          term.write('\r\n');
+          
+          const input = inputBuffer.trim().toLowerCase();
+          if (input === 'y' || input === 'yes') {
+            sendCommandToServer('y');
+          } else if (input === 'n' || input === 'no' || input === '') {
+            sendCommandToServer('n');
+          } else {
+            // 无效输入，默认取消
+            sendCommandToServer('n');
+          }
+          
+          setInputBuffer('');
+          return;
+        } else if (isBackspace) {
+          // 允许删除输入
+          if (inputBuffer.length > 0) {
+            const lastChar = inputBuffer[inputBuffer.length - 1];
+            const charWidth = getCharWidth(lastChar);
+            
+            for (let i = 0; i < charWidth; i++) {
+              term.write('\b \b');
+            }
+            
+            setInputBuffer(prev => prev.substring(0, prev.length - 1));
+          }
+          return;
+        } else if (/^[a-zA-Z0-9\s]$/.test(data)) {
+          // 允许输入字母、数字和空格
+          term.write(data);
+          setInputBuffer(prev => prev + data);
+          return;
+        }
+        
+        // 忽略其他输入
+        return;
       }
       
       if (isEnter) {
