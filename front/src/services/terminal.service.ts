@@ -38,6 +38,20 @@ export class TerminalService {
   }
 
   /**
+   * Returns the current path
+   */
+  getPath(): string {
+    return this.path;
+  }
+
+  /**
+   * Returns the current username
+   */
+  getUsername(): string {
+    return this.username;
+  }
+
+  /**
    * Simulates changing directory
    */
   private changeDirectory(newPath: string): string {

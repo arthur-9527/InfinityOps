@@ -4,6 +4,7 @@ import '@xterm/xterm/css/xterm.css';
 import { FitAddon } from 'xterm-addon-fit';
 import { WebLinksAddon } from 'xterm-addon-web-links';
 import { terminalService } from '../../services/terminal.service';
+import { webSocketService } from '../../services/websocket.service';
 
 interface TerminalProps {
   initialCommand?: string;
@@ -17,8 +18,27 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
   const [commandHistory, setCommandHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [lastCharLen, setLastCharLen] = useState<number>(1); // 跟踪最后输入字符的长度
+  const [isConnected, setIsConnected] = useState<boolean>(false);
   
   useEffect(() => {
+    // 连接到WebSocket服务器
+    webSocketService.connect();
+
+    // 监听WebSocket状态变化
+    const unsubscribeStatus = webSocketService.onStatusChange((status) => {
+      setIsConnected(status === 'connected');
+    });
+
+    // 监听从服务器返回的消息
+    const unsubscribeMessage = webSocketService.onMessage('terminalResponse', (message) => {
+      if (xtermRef.current && message.payload) {
+        // 在终端显示服务器返回的响应
+        xtermRef.current.write(`${message.payload.output}\r\n`);
+        // 显示新的提示符
+        xtermRef.current.write(terminalService.getPrompt());
+      }
+    });
+    
     // Attempt to fit the terminal whenever the window resizes
     const handleResize = () => {
       if (xtermRef.current) {
@@ -99,6 +119,9 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
     
     return () => {
       window.removeEventListener('resize', handleResize);
+      unsubscribeStatus();
+      unsubscribeMessage();
+      webSocketService.disconnect();
     };
   }, [initialCommand]);
   
@@ -133,6 +156,21 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
       }
     }
   };
+
+  // 发送命令到后端服务器
+  const sendCommandToServer = (command: string) => {
+    if (isConnected) {
+      webSocketService.send('terminalCommand', { 
+        command,
+        path: terminalService.getPath(),
+        timestamp: Date.now()
+      });
+      return true;
+    } else {
+      console.warn('WebSocket not connected. Using local command processing.');
+      return false;
+    }
+  };
   
   const handleUserInput = (data: string) => {
     const term = xtermRef.current;
@@ -155,15 +193,27 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
           setCommandHistory(prev => [...prev, inputBuffer]);
           setHistoryIndex(-1);
           
-          // Process command
-          const output = terminalService.processCommand(inputBuffer);
-          if (output) {
-            term.write(output + '\r\n');
+          // 尝试通过WebSocket发送命令
+          const sentToServer = sendCommandToServer(inputBuffer);
+
+          // 如果WebSocket未连接或发送失败，使用本地处理
+          if (!sentToServer) {
+            // 本地处理命令
+            const output = terminalService.processCommand(inputBuffer);
+            if (output) {
+              term.write(output + '\r\n');
+            }
+            
+            // 立即显示新的提示符
+            term.write(terminalService.getPrompt());
           }
+          // WebSocket连接时，不立即显示提示符，等待服务器响应后显示
+        } else {
+          // 空命令，直接显示提示符
+          term.write(terminalService.getPrompt());
         }
         
-        // Write the prompt and reset input buffer
-        term.write(terminalService.getPrompt());
+        // 重置输入缓冲区
         setInputBuffer('');
         setLastCharLen(1); // 重置字符长度
       } else if (isBackspace) {
@@ -312,7 +362,8 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
         padding: '0',
         margin: '0',
         borderBottomLeftRadius: '6px',
-        borderBottomRightRadius: '6px'
+        borderBottomRightRadius: '6px',
+        position: 'relative'
       }}
       onClick={() => {
         // Focus the terminal when container is clicked
@@ -321,6 +372,22 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
         }
       }}
     >
+      {!isConnected && (
+        <div style={{
+          position: 'absolute',
+          top: '8px',
+          right: '8px',
+          backgroundColor: '#ff5555',
+          color: 'white',
+          padding: '2px 6px',
+          borderRadius: '4px',
+          fontSize: '10px',
+          zIndex: 100,
+          opacity: 0.8
+        }}>
+          Not connected to server
+        </div>
+      )}
       <XTerm
         ref={handleTerminalRef}
         options={terminalOptions}
