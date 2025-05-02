@@ -20,17 +20,7 @@ export function createWebSocketServer(): WebSocketServer {
 
   // 服务器开始监听
   wss.on('listening', () => {
-    logger.info(`WebSocket server started and listening on port ${config.ws.port}`);
-  });
-
-  // 处理新的连接请求
-  wss.on('headers', (headers, request) => {
-    const ip = request.socket.remoteAddress;
-    const userAgent = request.headers['user-agent'] || 'unknown';
-    const origin = request.headers.origin || 'unknown';
-    
-    logger.info(`WebSocket connection attempt from IP: ${ip}, Origin: ${origin}, User-Agent: ${userAgent}`);
-    logger.debug(`Connection headers: ${JSON.stringify(headers)}`);
+    logger.info(`WebSocket server started on port ${config.ws.port}`);
   });
 
   // 处理新的连接
@@ -38,12 +28,10 @@ export function createWebSocketServer(): WebSocketServer {
     const clientId = request.headers['sec-websocket-key'] || `client-${Date.now()}`;
     const ip = request.socket.remoteAddress;
     const origin = request.headers.origin || 'unknown';
-    const path = request.url || '/';
     
     clients.set(clientId, ws);
     
-    logger.info(`Client connected: ${clientId} from ${ip} (origin: ${origin}, path: ${path})`);
-    logger.debug(`Total connected clients: ${clients.size}`);
+    logger.info(`Client connected: ${clientId} from ${ip}`);
 
     // 连接建立后立即发送欢迎消息
     try {
@@ -53,27 +41,21 @@ export function createWebSocketServer(): WebSocketServer {
         timestamp: Date.now(),
         clientId: clientId
       };
-      const messageStr = JSON.stringify(welcomeMessage);
       
-      logger.debug(`Sending welcome message to client ${clientId}: ${messageStr}`);
-      ws.send(messageStr);
+      ws.send(JSON.stringify(welcomeMessage));
     } catch (error) {
-      logger.error(`Error sending welcome message to client ${clientId}: ${error}`);
+      logger.error(`Error sending welcome message: ${error}`);
     }
 
     // 处理来自客户端的消息
     ws.on('message', (message: Buffer) => {
       try {
-        const messageStr = message.toString();
-        logger.debug(`Raw message received from ${clientId}: ${messageStr}`);
-        
-        const data = JSON.parse(messageStr);
-        logger.info(`Received message from ${clientId}: type=${data.type}, payload=${JSON.stringify(data.payload || {})}`);
+        const data = JSON.parse(message.toString());
+        logger.info(`Received message: type=${data.type} from ${clientId}`);
         
         // 处理不同类型的消息
         switch (data.type) {
           case 'ping':
-            logger.debug(`Ping received from ${clientId}, sending pong response`);
             ws.send(JSON.stringify({ 
               type: 'pong', 
               timestamp: Date.now(),
@@ -86,10 +68,10 @@ export function createWebSocketServer(): WebSocketServer {
           
           // 添加更多消息类型处理
           default:
-            logger.warn(`Unknown message type "${data.type}" from client ${clientId}`);
+            logger.warn(`Unknown message type: "${data.type}"`);
         }
       } catch (error) {
-        logger.error(`Error processing message from ${clientId}: ${error}`);
+        logger.error(`Error processing message: ${error}`);
         // 尝试发送错误响应
         try {
           ws.send(JSON.stringify({ 
@@ -99,7 +81,7 @@ export function createWebSocketServer(): WebSocketServer {
             timestamp: Date.now() 
           }));
         } catch (sendError) {
-          logger.error(`Failed to send error response to ${clientId}: ${sendError}`);
+          logger.error(`Failed to send error response: ${sendError}`);
         }
       }
     });
@@ -107,32 +89,29 @@ export function createWebSocketServer(): WebSocketServer {
     // 处理客户端断开连接
     ws.on('close', (code: number, reason: Buffer) => {
       const reasonStr = reason.toString() || 'No reason provided';
-      logger.info(`Client disconnected: ${clientId}, code: ${code}, reason: ${reasonStr}`);
+      logger.info(`Client disconnected: ${clientId}, code: ${code}`);
       clients.delete(clientId);
-      logger.debug(`Remaining connected clients: ${clients.size}`);
     });
 
     // 处理连接错误
     ws.on('error', (error) => {
       logger.error(`WebSocket error for client ${clientId}: ${error}`);
-      // 尝试关闭连接
       try {
         ws.close(1011, 'Internal server error');
       } catch (closeError) {
-        logger.error(`Failed to close connection for ${clientId} after error: ${closeError}`);
+        // 静默处理关闭错误
       }
     });
   });
 
   // 处理服务器错误
   wss.on('error', (error) => {
-    logger.error(`WebSocket server error: ${error.stack || error.toString()}`);
+    logger.error(`WebSocket server error: ${error.toString()}`);
   });
 
   // 处理服务器关闭
   wss.on('close', () => {
     logger.info('WebSocket server closed');
-    // 清理所有客户端连接
     clients.clear();
   });
 
@@ -144,7 +123,7 @@ export function createWebSocketServer(): WebSocketServer {
  */
 export function broadcastMessage(message: any): void {
   const messageStr = typeof message === 'string' ? message : JSON.stringify(message);
-  logger.info(`Broadcasting message to ${clients.size} clients: ${messageStr}`);
+  logger.info(`Broadcasting message to ${clients.size} clients`);
   
   let successCount = 0;
   let failCount = 0;
@@ -159,12 +138,13 @@ export function broadcastMessage(message: any): void {
         failCount++;
       }
     } else {
-      logger.debug(`Skipped client ${id} for broadcast (not open, state: ${client.readyState})`);
       failCount++;
     }
   });
   
-  logger.info(`Broadcast results: ${successCount} successful, ${failCount} failed`);
+  if (failCount > 0) {
+    logger.info(`Broadcast results: ${successCount} successful, ${failCount} failed`);
+  }
 }
 
 /**
@@ -175,21 +155,20 @@ export function sendToClient(clientId: string, message: any): boolean {
   const messageStr = typeof message === 'string' ? message : JSON.stringify(message);
   
   if (!client) {
-    logger.warn(`Cannot send message to client ${clientId}: client not found`);
+    logger.warn(`Cannot send message: client ${clientId} not found`);
     return false;
   }
   
   if (client.readyState !== WebSocket.OPEN) {
-    logger.warn(`Cannot send message to client ${clientId}: connection not open (state: ${client.readyState})`);
+    logger.warn(`Cannot send message: connection not open`);
     return false;
   }
   
   try {
-    logger.debug(`Sending message to client ${clientId}: ${messageStr}`);
     client.send(messageStr);
     return true;
   } catch (error) {
-    logger.error(`Error sending message to client ${clientId}: ${error}`);
+    logger.error(`Error sending message: ${error}`);
     return false;
   }
 }
