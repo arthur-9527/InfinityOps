@@ -4,12 +4,18 @@ import { createModuleLogger } from '../utils/logger';
 import { config } from '../config';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { commandAnalysisService } from './commandAnalysisService';
+import { AIMessage } from '../modules/ai/ai.interface';
 
 const logger = createModuleLogger('websocket');
 const execAsync = promisify(exec);
 
 // Client connection map
 const clients = new Map<string, WebSocket>();
+
+// Message history for AI context (keep limited history per client)
+const clientMessageHistory = new Map<string, AIMessage[]>();
+const MAX_HISTORY_LENGTH = 10;
 
 /**
  * 处理终端命令并返回结果
@@ -45,6 +51,84 @@ async function processTerminalCommand(command: string, path: string): Promise<st
     logger.error(`命令执行失败: ${error}`);
     return `Error: ${(error as Error).message}`;
   }
+}
+
+/**
+ * Process terminal command through AI analysis
+ */
+async function processCommandWithAI(command: string, path: string, clientId: string): Promise<any> {
+  // Get command history for this client (or initialize empty)
+  const history = clientMessageHistory.get(clientId) || [];
+  logger.info(`Command history for client ${clientId}: ${JSON.stringify(history)}`);
+  logger.info(`Command: ${command}`);
+  logger.info(`Path: ${path}`);
+  // Analyze the command using AI
+  const analysisResult = await commandAnalysisService.analyzeCommand(command, path, history);
+  
+  // If this is a bash command that should be executed
+  if (analysisResult.type === 'bash_execution' && analysisResult.shouldExecute && (analysisResult.command || analysisResult.bypassedAI)) {
+    try {
+      // Use the analyzed command or the original if it was bypassed
+      const cmdToExecute = analysisResult.command || command;
+      
+      // Execute the command and get output
+      const cmdOutput = await processTerminalCommand(cmdToExecute, path);
+      
+      // Update the result content with command output
+      analysisResult.content = cmdOutput;
+      analysisResult.success = true;
+    } catch (error) {
+      // Update result if execution failed
+      analysisResult.content = `Error executing command: ${(error as Error).message}`;
+      analysisResult.success = false;
+    }
+  }
+  
+  // Don't update history for bypassed AI commands to keep the context clean
+  if (!analysisResult.bypassedAI) {
+    // Update conversation history
+    updateClientHistory(clientId, command, analysisResult.content);
+  }
+  
+  return {
+    type: 'terminalResponse',
+    timestamp: Date.now(),
+    payload: {
+      command,
+      output: analysisResult.content,
+      analysisType: analysisResult.type,
+      path,
+      success: analysisResult.success,
+      bypassedAI: analysisResult.bypassedAI || false
+    }
+  };
+}
+
+/**
+ * Update client conversation history
+ */
+function updateClientHistory(clientId: string, userCommand: string, aiResponse: string): void {
+  // Get existing history or initialize new one
+  let history = clientMessageHistory.get(clientId) || [];
+  
+  // Add new messages
+  history.push({ role: 'user', content: userCommand });
+  history.push({ role: 'assistant', content: aiResponse });
+  
+  // Keep history length limited
+  if (history.length > MAX_HISTORY_LENGTH * 2) { // *2 because each exchange is 2 messages
+    history = history.slice(-MAX_HISTORY_LENGTH * 2);
+  }
+  
+  // Update history in the map
+  clientMessageHistory.set(clientId, history);
+}
+
+/**
+ * Clear client conversation history
+ */
+function clearClientHistory(clientId: string): void {
+  clientMessageHistory.delete(clientId);
 }
 
 /**
@@ -111,20 +195,9 @@ export function createWebSocketServer(): WebSocketServer {
               logger.info(`Terminal command received: ${command}`);
               
               try {
-                // 执行命令并获取结果
-                const output = await processTerminalCommand(command, path);
-                
-                // 发送响应回客户端
-                ws.send(JSON.stringify({
-                  type: 'terminalResponse',
-                  timestamp: Date.now(),
-                  payload: {
-                    command,
-                    output,
-                    path,
-                    success: true
-                  }
-                }));
+                // Process through AI instead of direct execution
+                const response = await processCommandWithAI(command, path, clientId);
+                ws.send(JSON.stringify(response));
               } catch (cmdError) {
                 logger.error(`Failed to process terminal command: ${cmdError}`);
                 ws.send(JSON.stringify({
@@ -132,7 +205,7 @@ export function createWebSocketServer(): WebSocketServer {
                   timestamp: Date.now(),
                   payload: {
                     command,
-                    output: `Error executing command: ${(cmdError as Error).message}`,
+                    output: `Error processing command: ${(cmdError as Error).message}`,
                     path,
                     success: false
                   }
@@ -149,6 +222,18 @@ export function createWebSocketServer(): WebSocketServer {
                 }
               }));
             }
+            break;
+            
+          case 'clearHistory':
+            // Clear conversation history for this client
+            clearClientHistory(clientId);
+            ws.send(JSON.stringify({
+              type: 'historyCleared',
+              timestamp: Date.now(),
+              payload: {
+                success: true
+              }
+            }));
             break;
             
           // 添加更多消息类型处理
@@ -176,6 +261,9 @@ export function createWebSocketServer(): WebSocketServer {
       const reasonStr = reason.toString() || 'No reason provided';
       logger.info(`Client disconnected: ${clientId}, code: ${code}`);
       clients.delete(clientId);
+      
+      // Clean up client history when disconnected
+      clearClientHistory(clientId);
     });
 
     // 处理连接错误
@@ -198,6 +286,9 @@ export function createWebSocketServer(): WebSocketServer {
   wss.on('close', () => {
     logger.info('WebSocket server closed');
     clients.clear();
+    
+    // Clear all client histories
+    clientMessageHistory.clear();
   });
 
   return wss;

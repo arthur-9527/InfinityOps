@@ -29,10 +29,6 @@ export const config = {
     ollama: {
       baseUrl: process.env.OLLAMA_API_URL || 'http://localhost:11434',
       model: process.env.OLLAMA_DEFAULT_MODEL || 'llama2',
-      temperature: parseFloat(process.env.OLLAMA_TEMPERATURE || '0.7'),
-      topP: parseFloat(process.env.OLLAMA_TOP_P || '0.9'),
-      topK: parseInt(process.env.OLLAMA_TOP_K || '40', 10),
-      numPredict: parseInt(process.env.OLLAMA_NUM_PREDICT || '128', 10),
     },
   },
 }; 

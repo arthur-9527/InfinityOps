@@ -8,6 +8,13 @@
     "dev": "pnpm nodemon --watch 'src/**/*.ts' --exec 'ts-node' src/index.ts",
     "build": "tsc",
     "test": "jest",
+    "test:ai": "ts-node src/scripts/test-ai.ts",
+    "test:ai:factory": "ts-node src/scripts/test-ai.ts factory",
+    "test:ai:models": "ts-node src/scripts/test-ai.ts models",
+    "test:ai:completion": "ts-node src/scripts/test-ai.ts completion",
+    "test:ai:ollama": "ts-node src/scripts/test-ai.ts ollama",
+    "test:command": "ts-node src/scripts/test-command-analysis.ts",
+    "print:env": "ts-node -e 'require(\"./src/config/env-example\").printExampleConfig()'",
     "lint": "pnpm eslint . --ext .ts",
     "format": "pnpm prettier --write \"src/**/*.ts\""
   },

@@ -5,23 +5,11 @@ import { AIService, AIMessage, AICompletionOptions, AICompletionResponse } from 
 export class OllamaService implements AIService {
   private baseUrl: string;
   private defaultModel: string;
-  private defaultSettings: {
-    temperature: number;
-    topP: number;
-    topK: number;
-    numPredict: number;
-  };
-
+  
   constructor() {
     const { ai } = config;
     this.baseUrl = ai.ollama.baseUrl;
     this.defaultModel = ai.ollama.model;
-    this.defaultSettings = {
-      temperature: ai.ollama.temperature,
-      topP: ai.ollama.topP,
-      topK: ai.ollama.topK,
-      numPredict: ai.ollama.numPredict,
-    };
   }
 
   private convertToOllamaPrompt(messages: AIMessage[]): string {
@@ -47,10 +35,11 @@ export class OllamaService implements AIService {
         prompt,
         stream: options.stream || false,
         options: {
-          temperature: options.temperature || this.defaultSettings.temperature,
-          top_p: options.topP || this.defaultSettings.topP,
-          top_k: this.defaultSettings.topK,
-          num_predict: options.maxTokens || this.defaultSettings.numPredict,
+          temperature: options.temperature || 0.7,
+          // Use reasonable defaults for other parameters
+          top_p: 0.9,
+          top_k: 40,
+          num_predict: options.maxTokens || 128,
         },
       };
 
