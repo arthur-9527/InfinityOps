@@ -6,6 +6,8 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { commandAnalysisService } from './commandAnalysisService';
 import { AIMessage } from '../modules/ai/ai.interface';
+import { SSHServiceImpl } from './ssh/sshService';
+import { SSHConnectionConfig } from './ssh/ssh.interface';
 
 const logger = createModuleLogger('websocket');
 const execAsync = promisify(exec);
@@ -13,9 +15,217 @@ const execAsync = promisify(exec);
 // Client connection map
 const clients = new Map<string, WebSocket>();
 
+// Client SSH session map
+const clientSshSessions = new Map<string, { sessionId: string, connected: boolean }>();
+
+// SSH service instance
+const sshService = new SSHServiceImpl();
+
 // Message history for AI context (keep limited history per client)
 const clientMessageHistory = new Map<string, AIMessage[]>();
 const MAX_HISTORY_LENGTH = 10;
+
+/**
+ * Process SSH connection command
+ */
+async function processSshConnectionCommand(command: string, clientId: string): Promise<any> {
+  // Simple SSH command pattern matching: ssh username@host or ssh -p port username@host
+  const sshCommandRegex = /^ssh\s+(?:-p\s+(\d+)\s+)?([^@\s]+)@([^\s]+)$/i;
+  const match = command.match(sshCommandRegex);
+  
+  if (!match) {
+    return {
+      type: 'terminalResponse',
+      timestamp: Date.now(),
+      payload: {
+        command,
+        output: 'Invalid SSH command format. Use: ssh username@host or ssh -p port username@host',
+        success: false
+      }
+    };
+  }
+  
+  const port = match[1] ? parseInt(match[1], 10) : 22;
+  const username = match[2];
+  const host = match[3];
+  
+  logger.info(`Attempting SSH connection: ${username}@${host}:${port}`);
+  
+  try {
+    // Close existing session if any
+    const existingSession = clientSshSessions.get(clientId);
+    if (existingSession && existingSession.sessionId) {
+      await sshService.closeSession(existingSession.sessionId);
+    }
+    
+    // Create a new SSH config
+    const sshConfig: SSHConnectionConfig = {
+      host,
+      port,
+      username,
+      // We'll prompt for password later
+    };
+    
+    // Store pending connection info (not connected yet)
+    clientSshSessions.set(clientId, {
+      sessionId: '', // Will be updated after connection
+      connected: false
+    });
+    
+    return {
+      type: 'sshConnectionRequest',
+      timestamp: Date.now(),
+      payload: {
+        host,
+        port,
+        username,
+        requiresPassword: true
+      }
+    };
+  } catch (error) {
+    logger.error(`SSH connection preparation failed: ${error}`);
+    return {
+      type: 'terminalResponse',
+      timestamp: Date.now(),
+      payload: {
+        command,
+        output: `Failed to prepare SSH connection: ${(error as Error).message}`,
+        success: false
+      }
+    };
+  }
+}
+
+/**
+ * Complete SSH connection with password
+ */
+async function completeSshConnection(clientId: string, config: SSHConnectionConfig): Promise<any> {
+  try {
+    logger.info(`Connecting to SSH: ${config.username}@${config.host}:${config.port}`);
+    
+    // Create a new SSH session
+    const session = await sshService.createSession(config, {
+      rows: 24,
+      cols: 80,
+      term: 'xterm-256color'
+    });
+    
+    // Store session info
+    clientSshSessions.set(clientId, {
+      sessionId: session.id,
+      connected: true
+    });
+    
+    // Set up data event forwarding
+    session.on('data', (data: string) => {
+      const client = clients.get(clientId);
+      if (client && client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({
+          type: 'sshData',
+          timestamp: Date.now(),
+          payload: {
+            data
+          }
+        }));
+      }
+    });
+    
+    // Handle session close
+    session.on('close', () => {
+      clientSshSessions.delete(clientId);
+      const client = clients.get(clientId);
+      if (client && client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({
+          type: 'sshDisconnected',
+          timestamp: Date.now(),
+          payload: {
+            message: 'SSH connection closed'
+          }
+        }));
+      }
+    });
+    
+    logger.info(`SSH connection established for client ${clientId}`);
+    return {
+      type: 'sshConnected',
+      timestamp: Date.now(),
+      payload: {
+        sessionId: session.id,
+        host: config.host,
+        username: config.username
+      }
+    };
+  } catch (error) {
+    logger.error(`SSH connection failed: ${error}`);
+    clientSshSessions.delete(clientId);
+    return {
+      type: 'terminalResponse',
+      timestamp: Date.now(),
+      payload: {
+        output: `Failed to connect to SSH server: ${(error as Error).message}`,
+        success: false
+      }
+    };
+  }
+}
+
+/**
+ * Process SSH command
+ */
+async function processSshCommand(command: string, clientId: string): Promise<any> {
+  const sessionInfo = clientSshSessions.get(clientId);
+  if (!sessionInfo || !sessionInfo.connected) {
+    return {
+      type: 'terminalResponse',
+      timestamp: Date.now(),
+      payload: {
+        command,
+        output: 'No active SSH connection. Please connect first using: ssh username@host',
+        success: false
+      }
+    };
+  }
+  
+  const session = sshService.getSession(sessionInfo.sessionId);
+  if (!session) {
+    clientSshSessions.delete(clientId);
+    return {
+      type: 'terminalResponse',
+      timestamp: Date.now(),
+      payload: {
+        command,
+        output: 'SSH session not found or expired. Please reconnect.',
+        success: false
+      }
+    };
+  }
+  
+  try {
+    // Send command to SSH session
+    session.write(command + '\n');
+    
+    // No immediate response, as the output will come through the SSH data event
+    return {
+      type: 'commandSent',
+      timestamp: Date.now(),
+      payload: {
+        command,
+        success: true
+      }
+    };
+  } catch (error) {
+    logger.error(`Error sending command to SSH: ${error}`);
+    return {
+      type: 'terminalResponse',
+      timestamp: Date.now(),
+      payload: {
+        command,
+        output: `Error sending command: ${(error as Error).message}`,
+        success: false
+      }
+    };
+  }
+}
 
 /**
  * 处理终端命令并返回结果
@@ -54,52 +264,153 @@ async function processTerminalCommand(command: string, path: string): Promise<st
 }
 
 /**
- * Process terminal command through AI analysis
+ * Process terminal command through AI analysis and then forward to SSH
  */
 async function processCommandWithAI(command: string, path: string, clientId: string): Promise<any> {
-  // Get command history for this client (or initialize empty)
+  // SSH连接命令处理
+  if (command.trim().toLowerCase().startsWith('ssh ')) {
+    return processSshConnectionCommand(command, clientId);
+  }
+  
+  // 获取命令历史记录
   const history = clientMessageHistory.get(clientId) || [];
   logger.info(`Command history for client ${clientId}: ${JSON.stringify(history)}`);
   logger.info(`Command: ${command}`);
   logger.info(`Path: ${path}`);
-  // Analyze the command using AI
+  
+  // 检查SSH连接状态
+  const sessionInfo = clientSshSessions.get(clientId);
+  const isConnected = sessionInfo && sessionInfo.connected;
+  
+  // 未连接SSH时，显示错误提示
+  if (!isConnected) {
+    return {
+      type: 'terminalResponse',
+      timestamp: Date.now(),
+      payload: {
+        command,
+        output: 'No active SSH connection. Please connect first using: ssh username@host',
+        success: false
+      }
+    };
+  }
+  
+  // 使用AI分析命令
   const analysisResult = await commandAnalysisService.analyzeCommand(command, path, history);
   
-  // If this is a bash command that should be executed
-  if (analysisResult.type === 'bash_execution' && analysisResult.shouldExecute && (analysisResult.command || analysisResult.bypassedAI)) {
-    try {
-      // Use the analyzed command or the original if it was bypassed
-      const cmdToExecute = analysisResult.command || command;
+  // 根据AI分析结果处理命令
+  if (analysisResult.type === 'ai_response') {
+    // AI回答类型直接返回AI的回答
+    updateClientHistory(clientId, command, analysisResult.content);
+    
+    return {
+      type: 'terminalResponse',
+      timestamp: Date.now(),
+      payload: {
+        command,
+        output: analysisResult.content,
+        analysisType: analysisResult.type,
+        path,
+        success: analysisResult.success,
+        bypassedAI: false
+      }
+    };
+  } else if (analysisResult.type === 'bash_execution') {
+    // 命令执行类型
+    if (analysisResult.shouldExecute) {
+      // 获取SSH会话
+      const session = sshService.getSession(sessionInfo.sessionId);
+      if (!session) {
+        logger.error(`SSH session not found for client ${clientId}`);
+        clientSshSessions.delete(clientId);
+        return {
+          type: 'terminalResponse',
+          timestamp: Date.now(),
+          payload: {
+            command,
+            output: 'SSH session not found or expired. Please reconnect.',
+            success: false
+          }
+        };
+      }
       
-      // Execute the command and get output
-      const cmdOutput = await processTerminalCommand(cmdToExecute, path);
+      try {
+        // 使用AI分析后的命令或原始命令
+        const cmdToExecute = analysisResult.command || command;
+        
+        // 记录日志
+        logger.info(`Executing command via SSH: ${cmdToExecute}`);
+        
+        // 向SSH会话发送命令
+        session.write(cmdToExecute + '\n');
+        
+        // AI对命令有优化或解释时，先显示AI的解释
+        if (analysisResult.content && analysisResult.command !== command) {
+          // 返回AI的解释，但不在终端显示提示符（因为SSH会返回数据）
+          return {
+            type: 'terminalResponse',
+            timestamp: Date.now(),
+            payload: {
+              command,
+              output: `AI优化：${analysisResult.content}\n执行命令: ${cmdToExecute}`,
+              analysisType: 'enhanced_execution',
+              path,
+              success: true,
+              showPrompt: false  // 不显示提示符，等待SSH响应
+            }
+          };
+        }
+        
+        // 如果没有特别的解释，只发送命令到SSH
+        return {
+          type: 'commandSent',
+          timestamp: Date.now(),
+          payload: {
+            command: cmdToExecute,
+            originalCommand: command,
+            aiEnhanced: cmdToExecute !== command,
+            success: true
+          }
+        };
+      } catch (error) {
+        logger.error(`Error sending command to SSH: ${error}`);
+        return {
+          type: 'terminalResponse',
+          timestamp: Date.now(),
+          payload: {
+            command,
+            output: `Error sending command: ${(error as Error).message}`,
+            success: false
+          }
+        };
+      }
+    } else {
+      // AI认为不应执行的命令，显示AI的解释
+      updateClientHistory(clientId, command, analysisResult.content);
       
-      // Update the result content with command output
-      analysisResult.content = cmdOutput;
-      analysisResult.success = true;
-    } catch (error) {
-      // Update result if execution failed
-      analysisResult.content = `Error executing command: ${(error as Error).message}`;
-      analysisResult.success = false;
+      return {
+        type: 'terminalResponse',
+        timestamp: Date.now(),
+        payload: {
+          command,
+          output: analysisResult.content,
+          analysisType: 'command_warning',
+          path,
+          success: false,
+          bypassedAI: false
+        }
+      };
     }
   }
   
-  // Don't update history for bypassed AI commands to keep the context clean
-  if (!analysisResult.bypassedAI) {
-    // Update conversation history
-    updateClientHistory(clientId, command, analysisResult.content);
-  }
-  
+  // 兜底处理
   return {
     type: 'terminalResponse',
     timestamp: Date.now(),
     payload: {
       command,
-      output: analysisResult.content,
-      analysisType: analysisResult.type,
-      path,
-      success: analysisResult.success,
-      bypassedAI: analysisResult.bypassedAI || false
+      output: 'Command could not be processed.',
+      success: false
     }
   };
 }
@@ -234,6 +545,72 @@ export function createWebSocketServer(): WebSocketServer {
                 success: true
               }
             }));
+            break;
+            
+          case 'sshPasswordAuth':
+            if (data.payload && data.payload.password) {
+              const sessionInfo = clientSshSessions.get(clientId);
+              if (!sessionInfo) {
+                ws.send(JSON.stringify({
+                  type: 'terminalResponse',
+                  timestamp: Date.now(),
+                  payload: {
+                    output: 'No pending SSH connection request',
+                    success: false
+                  }
+                }));
+                break;
+              }
+                
+              const { host, port, username } = data.payload;
+              const config: SSHConnectionConfig = {
+                host,
+                port,
+                username,
+                password: data.payload.password
+              };
+                
+              try {
+                const response = await completeSshConnection(clientId, config);
+                ws.send(JSON.stringify(response));
+              } catch (error) {
+                ws.send(JSON.stringify({
+                  type: 'terminalResponse',
+                  timestamp: Date.now(),
+                  payload: {
+                    output: `SSH connection failed: ${(error as Error).message}`,
+                    success: false
+                  }
+                }));
+              }
+            }
+            break;
+            
+          case 'sshResize':
+            if (data.payload && data.payload.rows && data.payload.cols) {
+              const sessionInfo = clientSshSessions.get(clientId);
+              if (sessionInfo && sessionInfo.connected) {
+                const session = sshService.getSession(sessionInfo.sessionId);
+                if (session) {
+                  session.resize(data.payload.rows, data.payload.cols);
+                }
+              }
+            }
+            break;
+            
+          case 'sshDisconnect':
+            const sessionInfo = clientSshSessions.get(clientId);
+            if (sessionInfo && sessionInfo.sessionId) {
+              await sshService.closeSession(sessionInfo.sessionId);
+              clientSshSessions.delete(clientId);
+              ws.send(JSON.stringify({
+                type: 'sshDisconnected',
+                timestamp: Date.now(),
+                payload: {
+                  message: 'SSH connection closed'
+                }
+              }));
+            }
             break;
             
           // 添加更多消息类型处理

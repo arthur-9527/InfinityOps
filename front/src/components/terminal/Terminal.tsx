@@ -19,7 +19,13 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [lastCharLen, setLastCharLen] = useState<number>(1); // 跟踪最后输入字符的长度
   const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [sshConnected, setSshConnected] = useState<boolean>(false);
+  const [awaitingPassword, setAwaitingPassword] = useState<boolean>(false);
+  const [sshConnectionDetails, setSshConnectionDetails] = useState<any>(null);
+  const [passwordBuffer, setPasswordBuffer] = useState<string>('');
+  const [passwordMode, setPasswordMode] = useState<boolean>(false);
   
+  // Main effect for setup and websocket connections
   useEffect(() => {
     // 连接到WebSocket服务器
     webSocketService.connect();
@@ -34,7 +40,63 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
       if (xtermRef.current && message.payload) {
         // 在终端显示服务器返回的响应
         xtermRef.current.write(`${message.payload.output}\r\n`);
-        // 显示新的提示符
+        
+        // 只有当明确不显示提示符时才不显示
+        // 这允许AI在转发命令到SSH之前显示解释，而不显示提示符
+        if (message.payload.showPrompt !== false) {
+          // 显示新的提示符
+          xtermRef.current.write(terminalService.getPrompt());
+        }
+      }
+    });
+    
+    // Handle SSH connection request
+    const unsubSshConnReq = webSocketService.onMessage('sshConnectionRequest', (message) => {
+      if (xtermRef.current && message.payload) {
+        setAwaitingPassword(true);
+        setSshConnectionDetails(message.payload);
+        xtermRef.current.write('\r\nPassword: ');
+        setPasswordMode(true);
+        setPasswordBuffer('');
+      }
+    });
+    
+    // Handle SSH connection established
+    const unsubSshConnected = webSocketService.onMessage('sshConnected', (message) => {
+      if (xtermRef.current && message.payload) {
+        setSshConnected(true);
+        setAwaitingPassword(false);
+        setPasswordMode(false);
+        // Update terminal service with SSH connection info
+        terminalService.setSshConnection(
+          true, 
+          message.payload.username, 
+          message.payload.host
+        );
+        xtermRef.current.write(`\r\nConnected to ${message.payload.username}@${message.payload.host}\r\n`);
+      }
+    });
+    
+    // Handle SSH data received
+    const unsubSshData = webSocketService.onMessage('sshData', (message) => {
+      if (xtermRef.current && message.payload && message.payload.data) {
+        // Write data directly to terminal
+        xtermRef.current.write(message.payload.data);
+      }
+    });
+    
+    // Handle command sent - nothing to do but log
+    const unsubCommandSent = webSocketService.onMessage('commandSent', (message) => {
+      console.log('Command sent to SSH server:', message.payload?.command);
+    });
+    
+    // Handle SSH disconnection
+    const unsubSshDisconnected = webSocketService.onMessage('sshDisconnected', (message) => {
+      if (xtermRef.current) {
+        setSshConnected(false);
+        // Update terminal service
+        terminalService.setSshConnection(false);
+        xtermRef.current.write('\r\nSSH connection closed\r\n');
         xtermRef.current.write(terminalService.getPrompt());
       }
     });
@@ -44,6 +106,12 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
       if (xtermRef.current) {
         try {
           xtermRef.current.fit?.();
+          
+          // If SSH connected, send terminal resize info
+          if (sshConnected) {
+            const { rows, cols } = xtermRef.current.terminal;
+            webSocketService.send('sshResize', { rows, cols });
+          }
         } catch (err) {
           console.error('Error fitting terminal:', err);
         }
@@ -117,13 +185,36 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
       }
     }, 200);
     
+    // Set initial SSH status from terminal service on component mount
+    setSshConnected(terminalService.isSshConnected());
+    
     return () => {
       window.removeEventListener('resize', handleResize);
       unsubscribeStatus();
       unsubscribeMessage();
+      unsubSshConnReq();
+      unsubSshConnected();
+      unsubSshData();
+      unsubSshDisconnected();
+      unsubCommandSent();
       webSocketService.disconnect();
     };
   }, [initialCommand]);
+  
+  // Effect for terminal resize when SSH connection status changes
+  useEffect(() => {
+    if (sshConnected && xtermRef.current) {
+      // Send initial terminal size after connection
+      setTimeout(() => {
+        try {
+          const { rows, cols } = xtermRef.current.terminal;
+          webSocketService.send('sshResize', { rows, cols });
+        } catch (err) {
+          console.error('Error sending terminal resize info:', err);
+        }
+      }, 100);
+    }
+  }, [sshConnected]);
   
   const handleTerminalRef = (term: any) => {
     xtermRef.current = term;
@@ -172,6 +263,18 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
     }
   };
   
+  // Complete SSH password authentication
+  const submitSshPassword = () => {
+    if (sshConnectionDetails && passwordBuffer) {
+      webSocketService.send('sshPasswordAuth', {
+        ...sshConnectionDetails,
+        password: passwordBuffer
+      });
+      setPasswordMode(false);
+      setPasswordBuffer('');
+    }
+  };
+  
   const handleUserInput = (data: string) => {
     const term = xtermRef.current;
     if (!term) return;
@@ -184,6 +287,26 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
       const isUpArrow = data === '\x1b[A';
       const isDownArrow = data === '\x1b[B';
       
+      // Special handling for password mode
+      if (passwordMode) {
+        if (isEnter) {
+          // Submit password
+          term.write('\r\n');
+          submitSshPassword();
+          return;
+        } else if (isBackspace) {
+          // Handle backspace in password mode (don't show character deletion)
+          if (passwordBuffer.length > 0) {
+            setPasswordBuffer(prev => prev.substring(0, prev.length - 1));
+          }
+          return;
+        } else if (!isUpArrow && !isDownArrow) {
+          // Add character to password buffer but don't display
+          setPasswordBuffer(prev => prev + data);
+          return;
+        }
+      }
+      
       if (isEnter) {
         // Process the command
         term.write('\r\n');
@@ -192,6 +315,15 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
           // Add command to history
           setCommandHistory(prev => [...prev, inputBuffer]);
           setHistoryIndex(-1);
+          
+          // Check if we're connected to SSH
+          if (!sshConnected && !inputBuffer.trim().toLowerCase().startsWith('ssh ')) {
+            // Not connected to SSH and not an SSH connect command
+            term.write('Error: Not connected to remote server. Please connect first using: ssh username@host\r\n');
+            term.write(terminalService.getPrompt());
+            setInputBuffer('');
+            return;
+          }
           
           // 尝试通过WebSocket发送命令
           const sentToServer = sendCommandToServer(inputBuffer);
@@ -249,8 +381,6 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
           if (historicalCommand.length > 0) {
             const lastChar = historicalCommand[historicalCommand.length - 1];
             setLastCharLen(getCharWidth(lastChar));
-          } else {
-            setLastCharLen(1);
           }
         }
       } else if (isDownArrow) {
@@ -271,28 +401,24 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
           if (historicalCommand.length > 0) {
             const lastChar = historicalCommand[historicalCommand.length - 1];
             setLastCharLen(getCharWidth(lastChar));
-          } else {
-            setLastCharLen(1);
           }
         } else if (historyIndex === 0) {
-          // Clear buffer when reaching the end of history
+          // Clear input when reaching the end of history
           clearCurrentInput(inputBuffer);
-          
-          setHistoryIndex(-1);
           setInputBuffer('');
-          setLastCharLen(1);
+          setHistoryIndex(-1);
         }
       } else {
-        // Regular character input
+        // Normal character input
         term.write(data);
         setInputBuffer(prev => prev + data);
         
-        // 更新最后输入字符的长度
+        // 更新最后一个字符的宽度
         setLastCharLen(getCharWidth(data));
       }
     } catch (err) {
       console.error('Error handling user input:', err);
-      setError('Failed to process input');
+      setError(`Input error: ${err}`);
     }
   };
   
