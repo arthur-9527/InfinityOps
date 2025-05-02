@@ -1,5 +1,6 @@
 import React from 'react';
 import Terminal from './components/terminal/Terminal';
+import WebSocketStatus from './components/WebSocketStatus';
 import './App.css';
 
 function App() {
@@ -15,6 +16,7 @@ function App() {
           <div className="terminal-title">Terminal</div>
           <div style={{ width: "70px" }}></div> {/* Spacer to balance the title */}
         </div>
+        <WebSocketStatus />
         <div className="terminal-body">
           <Terminal initialCommand="Last login: Wed Jun  3 21:56:14 on ttys003\ntest@server ~ $ " />
         </div>
