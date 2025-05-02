@@ -429,7 +429,7 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
     cursorBlink: true,
     cursorStyle: 'block' as 'block', // Explicitly typed as valid value
     scrollback: 1000,
-    rows: 35,
+    rows: 34, // 减少一行，为底部留出空间
     cols: 120,
     convertEol: true, // Ensure \n is converted to \r\n
     theme: {
@@ -489,7 +489,8 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
         margin: '0',
         borderBottomLeftRadius: '6px',
         borderBottomRightRadius: '6px',
-        position: 'relative'
+        position: 'relative',
+        paddingBottom: '10px' // 添加底部内边距
       }}
       onClick={() => {
         // Focus the terminal when container is clicked
@@ -514,12 +515,19 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
           Not connected to server
         </div>
       )}
-      <XTerm
-        ref={handleTerminalRef}
-        options={terminalOptions}
-        addons={[new FitAddon(), new WebLinksAddon()]}
-        onData={handleUserInput}
-      />
+      <div style={{ 
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        paddingBottom: '8px' // 确保XTerm有底部空间
+      }}>
+        <XTerm
+          ref={handleTerminalRef}
+          options={terminalOptions}
+          addons={[new FitAddon(), new WebLinksAddon()]}
+          onData={handleUserInput}
+        />
+      </div>
     </div>
   );
 };
