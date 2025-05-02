@@ -67,13 +67,16 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
         setSshConnected(true);
         setAwaitingPassword(false);
         setPasswordMode(false);
-        // Update terminal service with SSH connection info
+        // Update terminal service with SSH connection info and use display hostname
         terminalService.setSshConnection(
           true, 
           message.payload.username, 
-          message.payload.host
+          message.payload.displayHost || message.payload.host // 优先使用displayHost
         );
-        xtermRef.current.write(`\r\nConnected to ${message.payload.username}@${message.payload.host}\r\n`);
+        
+        // 使用displayHost显示连接成功消息
+        const displayHost = message.payload.displayHost || message.payload.host;
+        xtermRef.current.write(`\r\nConnected to ${message.payload.username}@${displayHost}\r\n`);
       }
     });
     

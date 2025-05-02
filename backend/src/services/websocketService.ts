@@ -79,6 +79,7 @@ async function processSshConnectionCommand(command: string, clientId: string): P
         host,
         port,
         username,
+        displayHost: 'server',
         requiresPassword: true
       }
     };
@@ -152,7 +153,8 @@ async function completeSshConnection(clientId: string, config: SSHConnectionConf
       payload: {
         sessionId: session.id,
         host: config.host,
-        username: config.username
+        username: config.username,
+        displayHost: 'server'
       }
     };
   } catch (error) {
