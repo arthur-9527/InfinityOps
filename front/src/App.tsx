@@ -16,7 +16,7 @@ function App() {
           <div className="terminal-title">Terminal</div>
           <div style={{ width: "70px" }}></div> {/* Spacer to balance the title */}
         </div>
-        <WebSocketStatus />
+        {/* <WebSocketStatus /> */}
         <div className="terminal-body">
           <Terminal initialCommand="Last login: Wed Jun  3 21:56:14 on ttys003\ntest@server ~ $ " />
         </div>

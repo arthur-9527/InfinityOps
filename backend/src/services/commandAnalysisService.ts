@@ -221,8 +221,65 @@ export class CommandAnalysisService {
           // 确保只保留可能的JSON部分
           .replace(/^(?:.|\n)*?(\{(?:.|\n)*\})(?:.|\n)*$/, '$1');
         
-        // 解析JSON
-        const parsedResponse = JSON.parse(cleanedResponse) as CommandAnalysisResult;
+        let parsedResponse: CommandAnalysisResult;
+        
+        try {
+          // 首先尝试直接解析
+          parsedResponse = JSON.parse(cleanedResponse) as CommandAnalysisResult;
+        } catch (firstParseError) {
+          // 直接解析失败，尝试修复截断的JSON
+          logger.warn(`初次JSON解析失败，尝试修复截断的JSON: ${firstParseError}`);
+          
+          // 尝试修复不完整的JSON
+          let fixedJson = cleanedResponse;
+          
+          // 检查是否有未闭合的引号 - 常见的截断问题
+          const quoteCount = (cleanedResponse.match(/"/g) || []).length;
+          if (quoteCount % 2 !== 0) {
+            // 引号数量不是偶数，可能有未闭合的字符串
+            logger.warn(`检测到未闭合的引号，尝试修复`);
+            
+            // 查找最后一个完整的字段结束位置
+            const lastValidPos = cleanedResponse.lastIndexOf('",');
+            if (lastValidPos > 0) {
+              fixedJson = cleanedResponse.substring(0, lastValidPos + 1) + '"}';
+            } else {
+              // 没有找到完整字段，尝试关闭整个JSON对象
+              fixedJson = cleanedResponse + '"}';
+            }
+          }
+          
+          // 检查是否缺少结束括号
+          if (!fixedJson.trim().endsWith('}')) {
+            fixedJson = fixedJson + '}';
+          }
+          
+          // 尝试再次解析修复后的JSON
+          try {
+            parsedResponse = JSON.parse(fixedJson) as CommandAnalysisResult;
+            logger.info(`JSON修复成功`);
+          } catch (secondParseError) {
+            // 如果修复后仍然失败，尝试手动构建一个基本响应
+            logger.error(`JSON修复失败: ${secondParseError}`);
+            
+            // 尝试提取type字段
+            const typeMatch = cleanedResponse.match(/"type"\s*:\s*"([^"]+)"/);
+            const type = typeMatch ? typeMatch[1] as 'bash_execution' | 'ai_response' : 'ai_response';
+            
+            // 尝试提取content字段的部分内容
+            const contentMatch = cleanedResponse.match(/"content"\s*:\s*"([^"]+)/);
+            const partialContent = contentMatch ? contentMatch[1] : '内容解析失败';
+            
+            // 构建基本响应
+            parsedResponse = {
+              type: type,
+              content: `${partialContent}...(内容被截断)`,
+              success: false,
+              command: command,
+              shouldExecute: false
+            };
+          }
+        }
         
         // 验证响应结构
         if (!parsedResponse.type || !parsedResponse.content) {
@@ -232,7 +289,7 @@ export class CommandAnalysisService {
         logger.info(`命令分析完成: 类型=${parsedResponse.type}, 是否执行=${parsedResponse.shouldExecute}`);
         return parsedResponse;
       } catch (parseError) {
-        logger.error(`解析AI响应为JSON失败: ${parseError}. 原始响应: ${responseContent.substring(0, 100)}...`);
+        logger.error(`解析AI响应为JSON失败: ${parseError}. 原始响应: ${responseContent.substring(0, 200)}...`);
         
         // 为常见命令提供默认响应
         const lowerCommand = command.toLowerCase().trim();
@@ -253,7 +310,7 @@ export class CommandAnalysisService {
         // 回退响应
         return {
           type: 'ai_response',
-          content: `AI无法解析命令。由于技术原因，您可能需要直接输入shell命令。\n\n原始命令: ${command}`,
+          content: `AI无法解析命令。由于技术原因，您可能需要直接输入shell命令。\n\n原始命令: ${command}\n\n错误信息: ${parseError}`,
           success: false,
           command: command,
           shouldExecute: false
@@ -291,6 +348,7 @@ export class CommandAnalysisService {
       const completionOptions: AICompletionOptions = {
         messages,
         temperature: 0.2, // 对安全分析使用较低的温度值
+        maxTokens: 2048,
       };
 
       const response = await this.aiService.createCompletion(completionOptions);
