@@ -13,14 +13,18 @@ const SYSTEM_PROMPT = `你是集成在名为InfinityOps的终端环境中的AI�
 1. 分析用户命令，判断它们是标准的bash命令还是对AI的请求。
 2. 对于bash命令：确定它们是应该直接执行还是需要解释或修改。
 3. 对于AI请求：基于你的知识提供有用且准确的回答。
+4. 对于复杂请求：生成适当的shell脚本或命令序列来执行多步骤操作。
 
 !!!!重要!!!!
 你必须按照以下结构JSON格式返回数据：
 {
-  "type": "bash_execution" | "ai_response",
+  "type": "bash_execution" | "ai_response" | "script_execution",
   "content": "你的详细响应或命令解释",
   "success": true | false,
   "command": "要执行的命令（如适用）",
+  "commands": ["命令1", "命令2", ...], // 当需要执行多个命令时使用
+  "script": "#!/bin/bash\\n\\n# 完整的shell脚本内容\\n...", // 用于复杂操作的shell脚本
+  "scriptType": "bash" | "python" | "node" | "ruby", // 脚本类型
   "shouldExecute": true | false,
   "requireConfirmation": true | false
 }
@@ -42,10 +46,20 @@ const SYSTEM_PROMPT = `你是集成在名为InfinityOps的终端环境中的AI�
 - shouldExecute应始终为false
 - requireConfirmation应始终为false
 
+对于script_execution类型：
+- 用于复杂的多步骤操作
+- 在script字段中提供完整的shell脚本
+- 在scriptType字段中指定脚本类型(bash/python/node/ruby)
+- 在content字段中提供对脚本功能的简短说明
+- requireConfirmation应设置为true
+- 确保脚本内包含清晰的注释和错误处理
+
 示例：
 1. 如果用户输入"ls -la"，回答：{"type":"bash_execution","content":"","success":true,"command":"ls -la","shouldExecute":true,"requireConfirmation":false}
 2. 如果用户输入"rm -rf /"，回答：{"type":"bash_execution","content":"这个命令很危险，它会删除根目录中的所有文件。","success":false,"command":"rm -rf /","shouldExecute":false,"requireConfirmation":true}
-3. 如果用户问"如何查看磁盘空间？"，回答：{"type":"ai_response","content":"你可以使用'df'命令查看磁盘空间。例如，'df -h'以人类可读格式显示磁盘使用情况。","success":true,"command":"如何查看磁盘空间？","shouldExecute":false,"requireConfirmation":false}`;
+3. 如果用户问"如何查看磁盘空间？"，回答：{"type":"ai_response","content":"你可以使用'df'命令查看磁盘空间。例如，'df -h'以人类可读格式显示磁盘使用情况。","success":true,"command":"如何查看磁盘空间？","shouldExecute":false,"requireConfirmation":false}
+4. 如果用户说"创建一个Python脚本计算斐波那契数列并运行"，回答：{"type":"script_execution","content":"我将创建一个计算斐波那契数列的Python脚本并执行它","success":true,"script":"#!/usr/bin/env python\\n\\n# 计算斐波那契数列的简单脚本\\ndef fibonacci(n):\\n    a, b = 0, 1\\n    for _ in range(n):\\n        print(a, end=' ')\\n        a, b = b, a + b\\n    print()\\n\\nfibonacci(10)\\n","scriptType":"python","commands":["python test.py"],"shouldExecute":true,"requireConfirmation":true}
+5. 如果用户请求"帮我创建一个test.py脚本并执行"，回答：{"type":"script_execution","content":"我将创建一个简单的Python测试脚本并执行","success":true,"script":"#!/usr/bin/env python\\n\\n# 简单的Python测试脚本\\nprint('Hello from InfinityOps!')\\nprint('This is a test script.')\\nprint('Current date and time: ' + __import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S'))\\n","scriptType":"python","commands":["echo \"$script\" > test.py", "python test.py"],"shouldExecute":true,"requireConfirmation":true}`;
 
 // 安全分析的专门提示词
 const SECURITY_PROMPT = `你是集成在InfinityOps终端环境中专注于安全的AI助手。
@@ -53,13 +67,17 @@ const SECURITY_PROMPT = `你是集成在InfinityOps终端环境中专注于安�
 1. 识别可能损害系统的潜在有害命令
 2. 为有风险的命令建议更安全的替代方案
 3. 教育用户关于安全最佳实践
+4. 评估脚本和命令序列的安全性
 
 重要提示：你必须只返回符合以下结构的有效JSON：
 {
-  "type": "bash_execution" | "ai_response",
+  "type": "bash_execution" | "ai_response" | "script_execution",
   "content": "你的详细响应或命令解释",
   "success": true | false,
-  "command": "要执行的命令（如适用）",
+  "command": "要执行的命令（这里必须是基于unix bash的命令操作,不可以为其他。！！！特别重要！！！）",
+  "commands": ["命令1", "命令2", ...], 
+  "script": "完整的shell脚本内容", 
+  "scriptType": "bash" | "python" | "node" | "ruby",
   "shouldExecute": true | false,
   "securityRisk": "none" | "low" | "medium" | "high" | "critical",
   "requireConfirmation": true | false
@@ -75,10 +93,12 @@ const SECURITY_PROMPT = `你是集成在InfinityOps终端环境中专注于安�
 - 更改权限的命令
 - 从互联网下载并执行内容的命令
 - 带有sudo或root权限的命令
+- 包含潜在危险操作的脚本
+- 执行未经验证的下载代码的脚本
 
-对于任何中等或更高安全风险的命令，设置shouldExecute为false并解释风险。
-对于低或中等风险的命令，设置requireConfirmation为true，这将提示用户确认是否执行。
-对于高或严重风险的命令，设置requireConfirmation为true，即使shouldExecute为false。`;
+对于任何中等或更高安全风险的命令或脚本，设置shouldExecute为false并解释风险。
+对于低或中等风险的命令或脚本，设置requireConfirmation为true，这将提示用户确认是否执行。
+对于高或严重风险的命令或脚本，设置requireConfirmation为true，即使shouldExecute为false。`;
 
 // 不需要AI分析的常见命令列表
 // 可以通过BYPASS_COMMANDS环境变量覆盖
@@ -113,10 +133,13 @@ function getBypassMode(): 'none' | 'common' | 'all' {
 }
 
 export interface CommandAnalysisResult {
-  type: 'bash_execution' | 'ai_response';
+  type: 'bash_execution' | 'ai_response' | 'script_execution';
   content: string;
   success: boolean;
   command?: string;
+  commands?: string[]; // 添加命令数组字段
+  script?: string;     // 添加脚本内容字段
+  scriptType?: 'bash' | 'python' | 'node' | 'ruby'; // 添加脚本类型字段
   shouldExecute?: boolean;
   securityRisk?: 'none' | 'low' | 'medium' | 'high' | 'critical';
   bypassedAI?: boolean;
@@ -331,6 +354,7 @@ export class CommandAnalysisService {
       const completionOptions: AICompletionOptions = {
         messages,
         temperature: 0.3, // 使用默认温度值
+        maxTokens: 4096,  // 显式设置较高的token限制，确保响应不会被截断
       };
 
       // 获取AI响应
@@ -338,6 +362,12 @@ export class CommandAnalysisService {
       
       // 提取AI响应内容
       const responseContent = response.choices[0].message.content.trim();
+      
+      // 打印原始AI响应
+      console.log('==============================================');
+      console.log('原始AI响应:');
+      console.log(responseContent);
+      console.log('==============================================');
       
       try {
         // 尝试解析JSON响应
@@ -348,6 +378,11 @@ export class CommandAnalysisService {
           .replace(/```json|```/g, '')
           // 确保只保留可能的JSON部分
           .replace(/^(?:.|\n)*?(\{(?:.|\n)*\})(?:.|\n)*$/, '$1');
+        
+        // 打印清理后的响应
+        console.log('清理后的响应:');
+        console.log(cleanedResponse);
+        console.log('==============================================');
         
         let parsedResponse: CommandAnalysisResult;
         
@@ -392,7 +427,7 @@ export class CommandAnalysisService {
             
             // 尝试提取type字段
             const typeMatch = cleanedResponse.match(/"type"\s*:\s*"([^"]+)"/);
-            const type = typeMatch ? typeMatch[1] as 'bash_execution' | 'ai_response' : 'ai_response';
+            const type = typeMatch ? typeMatch[1] as 'bash_execution' | 'ai_response' | 'script_execution' : 'ai_response';
             
             // 尝试提取content字段的部分内容
             const contentMatch = cleanedResponse.match(/"content"\s*:\s*"([^"]+)/);
@@ -418,7 +453,39 @@ export class CommandAnalysisService {
         // 如果需要确认，则添加确认消息并将命令放入待确认队列
         if (parsedResponse.requireConfirmation) {
           const riskLevel = parsedResponse.securityRisk || '未知';
-          parsedResponse.confirmationMessage = `命令风险等级: ${riskLevel}\n${parsedResponse.content}\n是否仍然执行此命令? (y/n) `;
+          
+          // 根据不同的响应类型创建确认消息
+          if (parsedResponse.type === 'script_execution') {
+            // 对于脚本执行，显示脚本类型和简短预览
+            const scriptType = parsedResponse.scriptType || 'bash';
+            const scriptPreview = parsedResponse.script ? 
+              parsedResponse.script.split('\n').slice(0, 5).join('\n') + 
+              (parsedResponse.script.split('\n').length > 5 ? '\n...(更多行)' : '') : 
+              '无脚本内容';
+            
+            parsedResponse.confirmationMessage = `操作类型: 脚本执行 (${scriptType})\n` +
+              `风险等级: ${riskLevel}\n` +
+              `${parsedResponse.content}\n\n` +
+              `脚本预览:\n${scriptPreview}\n\n` +
+              `是否执行此脚本? (y/n) `;
+            
+            logger.info(`准备执行${scriptType}脚本，行数: ${parsedResponse.script?.split('\n').length || 0}`);
+          } else if (parsedResponse.commands && parsedResponse.commands.length > 0) {
+            // 对于命令数组，显示将要执行的命令列表
+            const commandsList = parsedResponse.commands.map((cmd, i) => `${i+1}. ${cmd}`).join('\n');
+            
+            parsedResponse.confirmationMessage = `操作类型: 多命令执行\n` +
+              `风险等级: ${riskLevel}\n` +
+              `${parsedResponse.content}\n\n` +
+              `将执行以下命令:\n${commandsList}\n\n` +
+              `是否继续? (y/n) `;
+            
+            logger.info(`准备执行命令序列，命令数: ${parsedResponse.commands.length}`);
+          } else {
+            // 对于单个命令执行，使用原始消息格式
+            parsedResponse.confirmationMessage = `命令风险等级: ${riskLevel}\n${parsedResponse.content}\n是否仍然执行此命令? (y/n) `;
+          }
+          
           parsedResponse.isAwaitingConfirmation = true;
           
           // 设置一个唯一的键，将命令存储在待确认队列中
@@ -428,6 +495,14 @@ export class CommandAnalysisService {
           // 修改返回结果，向用户显示确认信息
           parsedResponse.content = parsedResponse.confirmationMessage || '';
           parsedResponse.shouldExecute = false;
+        }
+        
+        // 为脚本执行类型添加额外日志
+        if (parsedResponse.type === 'script_execution') {
+          logger.info(`脚本执行请求: 类型=${parsedResponse.scriptType}, 长度=${parsedResponse.script?.length || 0}字节`);
+          if (parsedResponse.commands) {
+            logger.info(`脚本执行命令: ${parsedResponse.commands.join(' && ')}`);
+          }
         }
         
         logger.info(`命令分析完成: 类型=${parsedResponse.type}, 是否执行=${parsedResponse.shouldExecute}, 需要确认=${parsedResponse.requireConfirmation}`);
@@ -495,11 +570,17 @@ export class CommandAnalysisService {
       const completionOptions: AICompletionOptions = {
         messages,
         temperature: 0.2, // 对安全分析使用较低的温度值
-        maxTokens: 2048,
+        maxTokens: 4096,  // 显式设置较高的token限制，确保响应不会被截断
       };
 
       const response = await this.aiService.createCompletion(completionOptions);
       const responseContent = response.choices[0].message.content.trim();
+      
+      // 打印原始AI响应
+      console.log('==============================================');
+      console.log('原始AI响应:');
+      console.log(responseContent);
+      console.log('==============================================');
       
       try {
         // 尝试解析JSON响应
@@ -510,6 +591,11 @@ export class CommandAnalysisService {
           .replace(/```json|```/g, '')
           // 确保只保留可能的JSON部分
           .replace(/^(?:.|\n)*?(\{(?:.|\n)*\})(?:.|\n)*$/, '$1');
+        
+        // 打印清理后的响应
+        console.log('清理后的响应:');
+        console.log(cleanedResponse);
+        console.log('==============================================');
         
         // 解析JSON
         const parsedResponse = JSON.parse(cleanedResponse) as CommandAnalysisResult;
@@ -523,8 +609,43 @@ export class CommandAnalysisService {
             parsedResponse.securityRisk === 'high' || 
             parsedResponse.securityRisk === 'critical') {
           parsedResponse.requireConfirmation = true;
-          const confirmationMsg = `检测到${parsedResponse.securityRisk}级别的安全风险:\n${parsedResponse.content}\n\n是否仍然执行此命令? (y/n) `;
-          parsedResponse.confirmationMessage = confirmationMsg;
+          
+          // 根据不同的响应类型创建确认消息
+          if (parsedResponse.type === 'script_execution') {
+            // 为脚本执行创建详细确认消息
+            const scriptType = parsedResponse.scriptType || 'bash';
+            const scriptPreview = parsedResponse.script ? 
+              parsedResponse.script.split('\n').slice(0, 5).join('\n') + 
+              (parsedResponse.script.split('\n').length > 5 ? '\n...(更多行)' : '') : 
+              '无脚本内容';
+            
+            const securityDetails = `检测到${parsedResponse.securityRisk}级别的安全风险:\n${parsedResponse.content}`;
+            
+            parsedResponse.confirmationMessage = `操作类型: 脚本执行 (${scriptType})\n` +
+              `安全风险: ${parsedResponse.securityRisk.toUpperCase()}\n` +
+              `${securityDetails}\n\n` +
+              `脚本预览:\n${scriptPreview}\n\n` +
+              `请确认是否仍然执行此脚本? (y/n) `;
+            
+            logger.warn(`检测到${parsedResponse.securityRisk}风险脚本，${scriptType}类型，行数: ${parsedResponse.script?.split('\n').length || 0}`);
+          } else if (parsedResponse.commands && parsedResponse.commands.length > 0) {
+            // 为命令序列创建详细确认消息
+            const commandsList = parsedResponse.commands.map((cmd, i) => `${i+1}. ${cmd}`).join('\n');
+            const securityDetails = `检测到${parsedResponse.securityRisk}级别的安全风险:\n${parsedResponse.content}`;
+            
+            parsedResponse.confirmationMessage = `操作类型: 多命令执行\n` +
+              `安全风险: ${parsedResponse.securityRisk.toUpperCase()}\n` +
+              `${securityDetails}\n\n` +
+              `命令列表:\n${commandsList}\n\n` +
+              `请确认是否仍然执行这些命令? (y/n) `;
+            
+            logger.warn(`检测到${parsedResponse.securityRisk}风险命令序列，命令数: ${parsedResponse.commands.length}`);
+          } else {
+            // 为单个命令创建确认消息
+            parsedResponse.confirmationMessage = `检测到${parsedResponse.securityRisk}级别的安全风险:\n${parsedResponse.content}\n\n是否仍然执行此命令? (y/n) `;
+            logger.warn(`检测到${parsedResponse.securityRisk}风险命令: ${parsedResponse.command}`);
+          }
+          
           parsedResponse.isAwaitingConfirmation = true;
           
           // 将命令添加到待确认队列
@@ -532,8 +653,18 @@ export class CommandAnalysisService {
           this.pendingRiskyCommands.set(commandKey, parsedResponse);
           
           // 更新返回的内容，展示确认信息
-          parsedResponse.content = confirmationMsg;
+          parsedResponse.content = parsedResponse.confirmationMessage || '';
           parsedResponse.shouldExecute = false;
+        }
+        
+        // 为脚本执行类型添加额外安全日志
+        if (parsedResponse.type === 'script_execution') {
+          logger.info(`脚本安全分析: 类型=${parsedResponse.scriptType}, 风险=${parsedResponse.securityRisk}`);
+          if (parsedResponse.script) {
+            // 记录脚本的前几行用于日志分析
+            const scriptFirstLines = parsedResponse.script.split('\n').slice(0, 3).join(' | ');
+            logger.info(`脚本开头: ${scriptFirstLines}`);
+          }
         }
         
         logger.info(`安全分析完成: 风险=${parsedResponse.securityRisk}, 是否执行=${parsedResponse.shouldExecute}, 需要确认=${parsedResponse.requireConfirmation}`);

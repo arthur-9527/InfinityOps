@@ -39,7 +39,7 @@ export class OllamaService implements AIService {
           // Use reasonable defaults for other parameters
           top_p: 0.9,
           top_k: 40,
-          num_predict: options.maxTokens || 128,
+          num_predict: options.maxTokens || 4096,
         },
       };
 

@@ -8,7 +8,6 @@ import { commandAnalysisService } from './commandAnalysisService';
 import { AIMessage } from '../modules/ai/ai.interface';
 import { SSHServiceImpl } from './ssh/sshService';
 import { SSHConnectionConfig } from './ssh/ssh.interface';
-import { SSHSession } from './ssh/ssh.interface';
 
 const logger = createModuleLogger('websocket');
 const execAsync = promisify(exec);
@@ -405,6 +404,123 @@ async function processCommandWithAI(command: string, path: string, clientId: str
         bypassedAI: false
       }
     };
+  } else if (analysisResult.type === 'script_execution') {
+    // 处理脚本执行类型
+    // 检查是否需要确认
+    if (analysisResult.requireConfirmation && analysisResult.isAwaitingConfirmation) {
+      return {
+        type: 'terminalResponse',
+        timestamp: Date.now(),
+        payload: {
+          command,
+          output: analysisResult.content,
+          analysisType: 'confirmation_required',
+          path,
+          success: true,
+          awaitingConfirmation: true,
+          showPrompt: false // 不显示新的命令提示符
+        }
+      };
+    }
+    
+    // 脚本已被确认执行
+    if (analysisResult.shouldExecute) {
+      // 获取SSH会话
+      const session = sshService.getSession(sessionInfo.sessionId);
+      if (!session) {
+        logger.error(`SSH session not found for client ${clientId}`);
+        clientSshSessions.delete(clientId);
+        return {
+          type: 'terminalResponse',
+          timestamp: Date.now(),
+          payload: {
+            command,
+            output: 'SSH session not found or expired. Please reconnect.',
+            success: false
+          }
+        };
+      }
+      
+      try {
+        // 处理脚本内容和命令
+        const script = analysisResult.script || '';
+        const scriptType = analysisResult.scriptType || 'bash';
+        const commands = analysisResult.commands || [];
+        
+        logger.info(`准备执行${scriptType}脚本，命令: ${commands.join(' && ')}`);
+        
+        // 生成随机脚本文件名以避免冲突
+        const randomSuffix = Math.floor(Math.random() * 1000);
+        const timestamp = new Date().getTime();
+        const scriptFileName = `script_${timestamp}_${randomSuffix}.${scriptType === 'python' ? 'py' : 'sh'}`;
+        
+        // 创建一个变量存储脚本内容，处理特殊字符转义
+        const escapedScript = script.replace(/"/g, '\\"').replace(/`/g, '\\`');
+        
+        // 构建保存脚本文件命令
+        const saveScriptCmd = `cat > ${scriptFileName} << 'EOL'\n${script}\nEOL\n`;
+        
+        // 构建执行命令
+        let execCmd = '';
+        if (scriptType === 'python') {
+          execCmd = `python ${scriptFileName}`;
+        } else if (scriptType === 'node') {
+          execCmd = `node ${scriptFileName}`;
+        } else if (scriptType === 'ruby') {
+          execCmd = `ruby ${scriptFileName}`;
+        } else {
+          // 默认为bash
+          execCmd = `bash ${scriptFileName}`;
+        }
+        
+        // 写入脚本保存命令
+        session.write(saveScriptCmd);
+        
+        // 添加小延迟确保文件写入完成
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
+        // 写入执行命令
+        session.write(`${execCmd}\n`);
+        
+        // 命令已发送，返回响应
+        return {
+          type: 'terminalResponse',
+          timestamp: Date.now(),
+          payload: {
+            command,
+            output: `正在执行${scriptType}脚本...\n脚本内容已保存至 ${scriptFileName}\n执行命令: ${execCmd}`,
+            analysisType: 'script_execution',
+            path,
+            success: true,
+            showPrompt: false // 不显示提示符，等待SSH执行结果
+          }
+        };
+      } catch (error) {
+        logger.error(`执行脚本时出错: ${error}`);
+        return {
+          type: 'terminalResponse',
+          timestamp: Date.now(),
+          payload: {
+            command,
+            output: `执行脚本时出错: ${(error as Error).message}`,
+            success: false
+          }
+        };
+      }
+    } else {
+      // 脚本不应该执行（可能因为风险等原因）
+      return {
+        type: 'terminalResponse',
+        timestamp: Date.now(),
+        payload: {
+          command,
+          output: analysisResult.content,
+          analysisType: 'script_cancelled',
+          path,
+          success: false
+        }
+      };
+    }
   } else if (analysisResult.type === 'bash_execution') {
     // 检查是否需要确认
     if (analysisResult.requireConfirmation && analysisResult.isAwaitingConfirmation) {
@@ -859,25 +975,9 @@ export function createWebSocketServer(): WebSocketServer {
               logger.info(`SSH signal received: ${data.payload.signal} for session ${data.payload.sessionId}`);
               
               try {
-                // 记录可用会话列表，帮助调试
-                const availableSessions = sshService.getActiveSessions();
-                logger.info(`可用SSH会话列表: ${JSON.stringify(availableSessions.map((s: SSHSession) => s.id))}`);
-                
                 const session = sshService.getSession(data.payload.sessionId);
                 if (!session) {
                   logger.warn(`SSH session not found: ${data.payload.sessionId}`);
-                  
-                  // 尝试从clientSshSessions查找
-                  const clientWithSession = Array.from(clientSshSessions.entries())
-                    .find(([_, info]) => info.sessionId === data.payload.sessionId);
-                  
-                  if (clientWithSession) {
-                    logger.info(`会话ID ${data.payload.sessionId} 属于客户端 ${clientWithSession[0]}`);
-                  } else {
-                    logger.warn(`在clientSshSessions中未找到会话ID ${data.payload.sessionId}`);
-                    logger.info(`当前客户端会话映射: ${JSON.stringify(Array.from(clientSshSessions.entries()))}`);
-                  }
-                  
                   break;
                 }
                 
