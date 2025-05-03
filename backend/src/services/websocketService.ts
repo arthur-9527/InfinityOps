@@ -8,6 +8,7 @@ import { commandAnalysisService } from './commandAnalysisService';
 import { AIMessage } from '../modules/ai/ai.interface';
 import { SSHServiceImpl } from './ssh/sshService';
 import { SSHConnectionConfig } from './ssh/ssh.interface';
+import { SSHSession } from './ssh/ssh.interface';
 
 const logger = createModuleLogger('websocket');
 const execAsync = promisify(exec);
@@ -849,6 +850,59 @@ export function createWebSocketServer(): WebSocketServer {
                   session.resize(data.payload.rows, data.payload.cols);
                 }
               }
+            }
+            break;
+            
+          case 'sshSignal':
+            // 处理SSH信号，如Ctrl+C (SIGINT)
+            if (data.payload && data.payload.signal && data.payload.sessionId) {
+              logger.info(`SSH signal received: ${data.payload.signal} for session ${data.payload.sessionId}`);
+              
+              try {
+                // 记录可用会话列表，帮助调试
+                const availableSessions = sshService.getActiveSessions();
+                logger.info(`可用SSH会话列表: ${JSON.stringify(availableSessions.map((s: SSHSession) => s.id))}`);
+                
+                const session = sshService.getSession(data.payload.sessionId);
+                if (!session) {
+                  logger.warn(`SSH session not found: ${data.payload.sessionId}`);
+                  
+                  // 尝试从clientSshSessions查找
+                  const clientWithSession = Array.from(clientSshSessions.entries())
+                    .find(([_, info]) => info.sessionId === data.payload.sessionId);
+                  
+                  if (clientWithSession) {
+                    logger.info(`会话ID ${data.payload.sessionId} 属于客户端 ${clientWithSession[0]}`);
+                  } else {
+                    logger.warn(`在clientSshSessions中未找到会话ID ${data.payload.sessionId}`);
+                    logger.info(`当前客户端会话映射: ${JSON.stringify(Array.from(clientSshSessions.entries()))}`);
+                  }
+                  
+                  break;
+                }
+                
+                // 处理不同类型的信号
+                switch (data.payload.signal) {
+                  case 'SIGINT': // Ctrl+C
+                    logger.info(`Sending Ctrl+C to SSH session ${data.payload.sessionId}`);
+                    // 发送 ASCII 3 (ETX - End of Text，即Ctrl+C)
+                    session.write('\x03');
+                    break;
+                    
+                  case 'SIGTSTP': // Ctrl+Z
+                    logger.info(`Sending Ctrl+Z to SSH session ${data.payload.sessionId}`);
+                    // 发送 ASCII 26 (SUB - Substitute，即Ctrl+Z)
+                    session.write('\x1A');
+                    break;
+                    
+                  default:
+                    logger.warn(`Unsupported SSH signal: ${data.payload.signal}`);
+                }
+              } catch (error) {
+                logger.error(`Error sending signal to SSH session: ${error}`);
+              }
+            } else {
+              logger.warn('Invalid SSH signal format');
             }
             break;
             

@@ -12,6 +12,11 @@ interface TerminalProps {
   initialCommand?: string;
 }
 
+interface SSHSession {
+  sessionId: string;
+  connected: boolean;
+}
+
 const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
   const xtermRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -28,6 +33,8 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
   const [passwordMode, setPasswordMode] = useState<boolean>(false);
   const [awaitingConfirmation, setAwaitingConfirmation] = useState<boolean>(false);
   const [waitingForTabCompletion, setWaitingForTabCompletion] = useState<boolean>(false);
+  const [sshSession, setSshSession] = useState<SSHSession | null>(null);
+  const [clientId, setClientId] = useState<string>('');
   const lastTabTime = useRef<number>(0);
   
   // Main effect for setup and websocket connections
@@ -92,6 +99,27 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
         setSshConnected(true);
         setAwaitingPassword(false);
         setPasswordMode(false);
+        
+        // 添加调试日志
+        console.log('收到SSH连接成功消息:', JSON.stringify(message.payload));
+        
+        // 保存SSH会话信息
+        if (message.payload.sessionId) {
+          console.log('设置SSH会话ID:', message.payload.sessionId);
+          setSshSession({
+            sessionId: message.payload.sessionId,
+            connected: true
+          });
+        } else {
+          console.warn('SSH连接成功但未收到会话ID');
+        }
+        
+        // 保存客户端ID
+        if (message.clientId) {
+          console.log('设置客户端ID:', message.clientId);
+          setClientId(message.clientId);
+        }
+        
         // Update terminal service with SSH connection info and use display hostname
         terminalService.setSshConnection(
           true, 
@@ -122,6 +150,10 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
     const unsubSshDisconnected = webSocketService.onMessage('sshDisconnected', (message) => {
       if (xtermRef.current) {
         setSshConnected(false);
+        
+        // 清除SSH会话信息
+        setSshSession(null);
+        
         // Update terminal service
         terminalService.setSshConnection(false);
         xtermRef.current.write('\r\nSSH connection closed\r\n');
@@ -350,6 +382,56 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
       const isUpArrow = data === '\x1b[A';
       const isDownArrow = data === '\x1b[B';
       const isTab = code === 9; // Tab key
+      const isCtrlC = code === 3; // Ctrl+C (ETX - End of Text)
+      
+      // 处理 Ctrl+C
+      if (isCtrlC) {
+        console.log('接收到 Ctrl+C');
+        
+        // 显示 ^C
+        term.write('^C');
+        term.write('\r\n');
+        
+        // 如果在确认模式下，取消确认
+        if (awaitingConfirmation) {
+          setAwaitingConfirmation(false);
+          setInputBuffer('');
+          term.write(terminalService.getPrompt());
+          return;
+        }
+        
+        // 如果在等待Tab补全，取消补全
+        if (waitingForTabCompletion) {
+          setWaitingForTabCompletion(false);
+        }
+        
+        // 如果当前有输入，清空输入并显示新提示符
+        if (inputBuffer.length > 0) {
+          setInputBuffer('');
+          term.write(terminalService.getPrompt());
+          return;
+        }
+        
+        // 如果连接到SSH，发送中断信号
+        if (sshConnected && sshSession) {
+          // 添加调试日志
+          console.log('发送SIGINT信号，SSH会话信息:', JSON.stringify(sshSession));
+          
+          // 发送中断信号 (SIGINT - Ctrl+C) 到SSH服务器
+          webSocketService.send('sshSignal', { 
+            signal: 'SIGINT',
+            sessionId: sshSession.sessionId
+          });
+        } else {
+          // 添加调试日志
+          console.log('未发送SIGINT信号，SSH连接状态:', sshConnected, '会话状态:', sshSession);
+          
+          // 未连接SSH或没有有效会话时，只显示新提示符
+          term.write(terminalService.getPrompt());
+        }
+        
+        return;
+      }
       
       // Special handling for password mode
       if (passwordMode) {
