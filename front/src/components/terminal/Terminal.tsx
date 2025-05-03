@@ -5,6 +5,7 @@ import { FitAddon } from 'xterm-addon-fit';
 import { WebLinksAddon } from 'xterm-addon-web-links';
 import { terminalService } from '../../services/terminal.service';
 import { webSocketService } from '../../services/websocket.service';
+import Logger from '../../utils/logger';
 
 
 interface TerminalProps {
@@ -26,6 +27,8 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
   const [passwordBuffer, setPasswordBuffer] = useState<string>('');
   const [passwordMode, setPasswordMode] = useState<boolean>(false);
   const [awaitingConfirmation, setAwaitingConfirmation] = useState<boolean>(false);
+  const [waitingForTabCompletion, setWaitingForTabCompletion] = useState<boolean>(false);
+  const lastTabTime = useRef<number>(0);
   
   // Main effect for setup and websocket connections
   useEffect(() => {
@@ -77,7 +80,7 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
       if (xtermRef.current && message.payload) {
         setAwaitingPassword(true);
         setSshConnectionDetails(message.payload);
-        xtermRef.current.write('\r\nPassword: ');
+        xtermRef.current.write('Password: ');
         setPasswordMode(true);
         setPasswordBuffer('');
       }
@@ -288,6 +291,41 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
     }
   };
   
+  // 发送Tab键到后端服务器请求自动补全
+  const sendTabCompletion = () => {
+    // Throttle tab presses to prevent rapid repeated requests
+    const now = Date.now();
+    if (now - lastTabTime.current < 250) { // 250ms debounce
+      return false;
+    }
+    lastTabTime.current = now;
+    
+    if (isConnected && sshConnected) {
+      // 保存当前输入状态
+      const currentBuffer = inputBuffer;
+      
+      // Set waiting state to prevent further tab presses
+      setWaitingForTabCompletion(true);
+      
+      webSocketService.send('tabCompletion', {
+        currentInput: currentBuffer,
+        path: terminalService.getPath(),
+        timestamp: now
+      });
+      
+      // 我们需要先清空终端输入，因为SSH会先清理行
+      setTimeout(() => {
+        if (xtermRef.current) {
+          // 清除当前输入
+          clearCurrentInput(currentBuffer);
+        }
+      }, 50);
+      
+      return true;
+    }
+    return false;
+  };
+  
   // Complete SSH password authentication
   const submitSshPassword = () => {
     if (sshConnectionDetails && passwordBuffer) {
@@ -311,6 +349,7 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
       const isBackspace = code === 127 || code === 8; // Backspace key
       const isUpArrow = data === '\x1b[A';
       const isDownArrow = data === '\x1b[B';
+      const isTab = code === 9; // Tab key
       
       // Special handling for password mode
       if (passwordMode) {
@@ -328,6 +367,10 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
         } else if (!isUpArrow && !isDownArrow) {
           // Add character to password buffer but don't display
           setPasswordBuffer(prev => prev + data);
+          return;
+        }
+        // Tab key should be ignored in password mode
+        if (isTab) {
           return;
         }
       }
@@ -388,6 +431,21 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
         
         // 忽略其他输入
         return;
+      }
+      
+      // Handle tab key for completion
+      if (isTab) {
+        // Only process if we're connected to SSH and not already waiting for completion
+        if (sshConnected && !waitingForTabCompletion) {
+          // For SSH sessions, send the current input for tab completion
+          sendTabCompletion();
+        }
+        return;
+      }
+      
+      // Reset tab completion waiting state when user types anything else
+      if (waitingForTabCompletion) {
+        setWaitingForTabCompletion(false);
       }
       
       if (isEnter) {
@@ -504,6 +562,69 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
       setError(`Input error: ${err}`);
     }
   };
+  
+  // Effect for handling tab completion responses
+  useEffect(() => {
+    const unsubTabCompletion = webSocketService.onMessage('tabCompletionResponse', (message) => {
+      if (xtermRef.current && message.payload) {
+        const { success, completionResult, message: errorMessage } = message.payload;
+        
+        // 如果补全请求成功
+        if (success && completionResult) {
+          const { originalInput, completedInput, options, found } = completionResult;
+          
+          console.log('Tab补全结果:', completionResult);
+          
+          // 先清除当前输入
+          // clearCurrentInput(inputBuffer);
+          console.log("测试1");
+          if (found) {
+            // 如果找到了补全项
+            // 只有一个补全结果
+            console.log('准备显示测试文本');
+            xtermRef.current.write(completedInput);
+            // 更新输入缓冲区
+            setInputBuffer(completedInput);
+            console.log('补全输入：',completedInput);
+          } else {
+            // 没找到补全项，恢复原始输入
+            xtermRef.current.write(originalInput);
+            setInputBuffer(originalInput);
+          }
+        } else if (errorMessage) {
+          // 补全请求失败，显示原始输入
+          console.error('Tab补全错误:', errorMessage);
+          xtermRef.current.write(inputBuffer);
+        }
+        // 重置Tab补全等待状态
+        setWaitingForTabCompletion(false);
+      }
+    });
+    
+    return () => {
+      unsubTabCompletion();
+    };
+  }, [inputBuffer]);
+  
+  // Effect for handling SSH data
+  useEffect(() => {
+    const unsubSshData = webSocketService.onMessage('sshData', (message) => {
+      // 检查是否是在等待Tab补全
+      if (waitingForTabCompletion) {
+        // Tab补全现在由专门的tabCompletionResponse处理，这里只进行简单处理
+        const data = message.payload?.data;
+        
+        // 如果接收到BEL字符，可以记录日志
+        if (data && data.includes('\u0007')) {
+          console.log('通过SSH数据接收到BEL信号');
+        }
+      }
+    });
+    
+    return () => {
+      unsubSshData();
+    };
+  }, [waitingForTabCompletion, inputBuffer]);
   
   // Terminal options to match the screenshot
   const terminalOptions = {

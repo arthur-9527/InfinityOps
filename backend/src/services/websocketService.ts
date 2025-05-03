@@ -119,6 +119,19 @@ async function completeSshConnection(clientId: string, config: SSHConnectionConf
     
     // Set up data event forwarding
     session.on('data', (data: string) => {
+      // 添加详细日志，记录从SSH接收到的数据
+      const dataStr = data.toString();
+      const hexData = Buffer.from(dataStr).toString('hex');
+      
+      // 记录数据详情
+      if (dataStr.length < 100) {
+        // 对于短数据，完整记录其内容
+        logger.debug(`SSH数据接收 (${clientId}): 长度=${dataStr.length}, 内容="${dataStr.replace(/\n/g, '\\n').replace(/\r/g, '\\r')}", 十六进制=${hexData}`);
+      } else {
+        // 对于长数据，只记录摘要
+        logger.debug(`SSH数据接收 (${clientId}): 长度=${dataStr.length}, 摘要="${dataStr.substring(0, 50).replace(/\n/g, '\\n').replace(/\r/g, '\\r')}...", 十六进制前缀=${hexData.substring(0, 100)}`);
+      }
+      
       const client = clients.get(clientId);
       if (client && client.readyState === WebSocket.OPEN) {
         client.send(JSON.stringify({
@@ -536,6 +549,154 @@ function clearClientHistory(clientId: string): void {
 }
 
 /**
+ * Process SSH tab completion
+ */
+async function processTabCompletion(currentInput: string, clientId: string): Promise<any> {
+  const sessionInfo = clientSshSessions.get(clientId);
+  if (!sessionInfo || !sessionInfo.connected) {
+    return {
+      type: 'tabCompletionResponse',
+      timestamp: Date.now(),
+      payload: {
+        success: false,
+        message: 'No active SSH connection'
+      }
+    };
+  }
+  
+  const session = sshService.getSession(sessionInfo.sessionId);
+  if (!session) {
+    clientSshSessions.delete(clientId);
+    return {
+      type: 'tabCompletionResponse',
+      timestamp: Date.now(),
+      payload: {
+        success: false,
+        message: 'SSH session not found or expired'
+      }
+    };
+  }
+  
+  try {
+    // For tab completion, we need to ensure the current input is in the shell's buffer
+    // before we send the tab key
+    const tabCompletionId = Date.now().toString();
+    logger.info(`Tab补全请求 (ID=${tabCompletionId}): "${currentInput}"`);
+    
+    // 这个变量将存储最终的补全结果
+    let completionResult = {
+      originalInput: currentInput,
+      completedInput: currentInput, // 默认保持不变
+      options: [] as string[],      // 可能的补全选项
+      found: false                  // 是否找到补全
+    };
+    
+    // 先尝试清除当前行（使用Ctrl+U，十六进制:15）
+    logger.debug(`清除当前行 (ID=${tabCompletionId})`);
+    session.write('\u0015');
+    
+    // 延迟一小段时间，确保清行命令生效
+    await new Promise(resolve => setTimeout(resolve, 30));
+    
+    // 然后写入当前输入
+    logger.debug(`写入当前输入: "${currentInput}" (ID=${tabCompletionId})`);
+    session.write(currentInput);
+    
+    // 再延迟一小段时间，确保输入已经被处理
+    await new Promise(resolve => setTimeout(resolve, 30));
+    
+    // 最后发送Tab字符
+    logger.debug(`发送Tab字符 (ID=${tabCompletionId})`);
+    session.write('\t');
+    
+    // 添加一次性事件监听，捕获数据响应
+    const dataPromise = new Promise<void>((resolve) => {
+      let dataHandler: (data: string) => void;
+      let responseBuffer = '';
+      let receivedBell = false;
+      
+      dataHandler = (data: string) => {
+        logger.info(`data:${data}`);
+        const dataStr = data.toString();
+        const hexData = Buffer.from(dataStr).toString('hex');
+        responseBuffer += dataStr;
+        
+        logger.info(`Tab补全响应 (ID=${tabCompletionId}): 长度=${dataStr.length}, 响应内容="${dataStr.replace(/\n/g, '\\n').replace(/\r/g, '\\r')}", 十六进制=${hexData}`);
+        // 检查是否收到BEL字符（十六进制07），表示无补全选项
+        if (dataStr.length <= 0) {
+          logger.info(`收到BEL信号，没有找到匹配的补全项 (ID=${tabCompletionId})`);
+          receivedBell = true;
+          // 没有找到补全项，保持原输入不变
+          completionResult = {
+            ...completionResult,
+            found: false
+          };
+          logger.debug('删除监听回调');
+          session.removeListener('data', dataHandler);
+          resolve();
+        }
+        else if (dataStr.trim().length > 0) {
+          // SSH返回了有效的补全数据，如"aconda3/"
+          logger.info(`接收到补全数据: "${dataStr}"`);
+          
+          // 提取原始输入的最后一个参数
+          const lastSpaceIndex = currentInput.lastIndexOf(' ');
+          const cmdBase = lastSpaceIndex >= 0 ? currentInput.substring(0, lastSpaceIndex + 1) : '';
+          const lastParam = lastSpaceIndex >= 0 ? currentInput.substring(lastSpaceIndex + 1) : currentInput;
+          
+          logger.info(`命令基础部分: "${cmdBase}", 最后参数: "${lastParam}"`);
+          
+          // 简化逻辑：直接使用SSH返回的补全数据
+          completionResult.completedInput = cmdBase + lastParam+dataStr;
+          completionResult.found = true;
+          logger.info(`补全结果: "${completionResult.completedInput}"`);
+          
+          logger.debug('处理完成，删除监听回调');
+          session.removeListener('data', dataHandler);
+          resolve();
+        }
+      };
+
+      // 添加监听器
+      session.on('data', dataHandler);
+    });
+    // 等待数据响应
+    await dataPromise.catch(err => {
+      logger.error(`监听Tab补全响应出错: ${err}`);
+    });
+    
+    // 延迟一段时间，确保所有响应都被捕获
+    await new Promise(resolve => setTimeout(resolve, 200));
+    // 清理：再次清除当前行（使用Ctrl+U），以便前端可以重新显示完整内容
+    session.write('\u0015');
+    
+    // 向前端返回补全结果
+    logger.info(`Tab补全处理完成 (ID=${tabCompletionId}), 结果: ${JSON.stringify(completionResult)}`);
+    
+    // 向前端返回响应
+    return {
+      type: 'tabCompletionResponse',
+      timestamp: Date.now(),
+      payload: {
+        success: true,
+        completionResult,
+        completionId: tabCompletionId
+      }
+    };
+  } catch (error) {
+    logger.error(`Error sending tab completion to SSH: ${error}`);
+    return {
+      type: 'tabCompletionResponse',
+      timestamp: Date.now(),
+      payload: {
+        success: false,
+        message: `Error processing tab completion: ${(error as Error).message}`
+      }
+    };
+  }
+}
+
+/**
  * Create a WebSocket server
  */
 export function createWebSocketServer(): WebSocketServer {
@@ -701,6 +862,40 @@ export function createWebSocketServer(): WebSocketServer {
                 timestamp: Date.now(),
                 payload: {
                   message: 'SSH connection closed'
+                }
+              }));
+            }
+            break;
+            
+          case 'tabCompletion':
+            // Handle tab completion requests - bypass AI processing
+            if (data.payload && data.payload.currentInput !== undefined) {
+              const { currentInput } = data.payload;
+              logger.info(`Tab completion requested for: "${currentInput}"`);
+              
+              try {
+                // Process tab completion directly
+                const response = await processTabCompletion(currentInput, clientId);
+                ws.send(JSON.stringify(response));
+              } catch (tabError) {
+                logger.error(`Failed to process tab completion: ${tabError}`);
+                ws.send(JSON.stringify({
+                  type: 'tabCompletionResponse',
+                  timestamp: Date.now(),
+                  payload: {
+                    success: false,
+                    message: `Error: ${(tabError as Error).message}`
+                  }
+                }));
+              }
+            } else {
+              logger.warn('Invalid tab completion format');
+              ws.send(JSON.stringify({
+                type: 'tabCompletionResponse',
+                timestamp: Date.now(),
+                payload: {
+                  success: false,
+                  message: 'Invalid tab completion request format'
                 }
               }));
             }
