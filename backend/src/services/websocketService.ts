@@ -8,6 +8,7 @@ import { commandAnalysisService } from './commandAnalysisService';
 import { AIMessage } from '../modules/ai/ai.interface';
 import { SSHServiceImpl } from './ssh/sshService';
 import { SSHConnectionConfig } from './ssh/ssh.interface';
+import { mcpIntegrationService } from './mcp-integration.service';
 
 const logger = createModuleLogger('websocket');
 const execAsync = promisify(exec);
@@ -310,19 +311,92 @@ async function processCommandWithAI(command: string, path: string, clientId: str
     };
   }
   
+  // 检查是否是直接跳过的命令
+  const baseCommand = command.trim().split(' ')[0];
+  const DEFAULT_BYPASS_COMMANDS = [
+    'ls', 'cd', 'pwd', 'clear', 'history', 'echo', 'cat', 'mkdir', 
+    'touch', 'cp', 'mv', 'date', 'whoami', 'df', 'du', 'free',
+    'ps', 'top', 'uname', 'hostname', 'ifconfig', 'ip'
+  ];
+  
+  // 获取环境变量配置的 bypass 模式
+  const bypassMode = process.env.COMMAND_BYPASS_MODE || 'common';
+  
+  // 直接执行简单命令的条件：
+  // 1. bypass模式是common或all 
+  // 2. 命令在默认跳过列表中
+  // 3. 不包含危险前缀（sudo, rm, >, >>, |, ;, &&, ||）
+  const ALWAYS_ANALYZE_PREFIXES = [
+    'sudo', 'rm', '>', '>>', '|', ';', '&&', '||'
+  ];
+  const shouldBypass = (bypassMode !== 'none') && 
+                      DEFAULT_BYPASS_COMMANDS.includes(baseCommand) &&
+                      !ALWAYS_ANALYZE_PREFIXES.some(prefix => command.includes(prefix));
+  
+  if (shouldBypass) {
+    // 简单命令直接执行，不经过MCP分析
+    logger.info(`Command '${command}' bypassing MCP analysis (simple command)`);
+    
+    try {
+      // 获取SSH会话
+      const session = sshService.getSession(sessionInfo.sessionId);
+      if (!session) {
+        logger.error(`SSH session not found for client ${clientId}`);
+        clientSshSessions.delete(clientId);
+        return {
+          type: 'terminalResponse',
+          timestamp: Date.now(),
+          payload: {
+            command,
+            output: 'SSH session not found or expired. Please reconnect.',
+            success: false
+          }
+        };
+      }
+      
+      // 直接发送命令到SSH
+      logger.info(`Executing bypassed command via SSH: ${command}`);
+      session.write(command + '\n');
+      
+      return {
+        type: 'commandSent',
+        timestamp: Date.now(),
+        payload: {
+          command,
+          success: true,
+          bypassedMCP: true
+        }
+      };
+    } catch (error) {
+      logger.error(`Error sending bypassed command to SSH: ${error}`);
+      return {
+        type: 'terminalResponse',
+        timestamp: Date.now(),
+        payload: {
+          command,
+          output: `Error sending command: ${(error as Error).message}`,
+          success: false
+        }
+      };
+    }
+  }
+  
   // 检查是否需要直接处理确认响应
   const isConfirmationResponse = /(^|\s+)(y|yes|n|no)(\s+|$)/i.test(command.trim().toLowerCase());
   
-  // 使用AI分析命令
-  const analysisResult = await commandAnalysisService.analyzeCommand(command, path, history);
-  
-  // 如果命令是对前一个风险命令的确认响应
-  if (analysisResult.isAwaitingConfirmation === false && isConfirmationResponse) {
-    // 这是确认响应的结果，特殊处理
-    if (analysisResult.shouldExecute) {
+  if (isConfirmationResponse) {
+    // 确认响应通过MCP处理
+    const confirmed = /^(y|yes|是|确认)$/i.test(command.trim());
+    const response = await mcpIntegrationService.handleConfirmation(
+      clientId,
+      confirmed,
+      command
+    );
+    
+    if (response.shouldProcess && confirmed) {
       // 用户确认执行命令
-      // 获取原始命令
-      const originalCommand = analysisResult.command || '';
+      const metadata = response.metadata || {};
+      const originalCommand = metadata.command || '';
       
       // 获取SSH会话
       const session = sshService.getSession(sessionInfo.sessionId);
@@ -355,7 +429,7 @@ async function processCommandWithAI(command: string, path: string, clientId: str
             command: originalCommand,
             success: true,
             isConfirmed: true,
-            immediateExecution: true  // 标记为立即执行
+            immediateExecution: true
           }
         };
       } catch (error) {
@@ -377,7 +451,7 @@ async function processCommandWithAI(command: string, path: string, clientId: str
         timestamp: Date.now(),
         payload: {
           command: command,
-          output: analysisResult.content,
+          output: response.content,
           analysisType: 'command_cancelled',
           path,
           success: false
@@ -386,82 +460,87 @@ async function processCommandWithAI(command: string, path: string, clientId: str
     }
   }
   
-  // 对于普通的分析结果，继续原有流程
-  // 根据AI分析结果处理命令
-  if (analysisResult.type === 'ai_response') {
-    // AI回答类型直接返回AI的回答
-    updateClientHistory(clientId, command, analysisResult.content);
+  // 不是简单命令也不是确认响应，使用MCP系统处理
+  try {
+    // 使用MCP集成服务处理命令
+    const mcpResponse = await mcpIntegrationService.processCommand(
+      clientId, // 使用clientId作为sessionId
+      command,
+      path,
+      undefined, // userId
+      { history } // 传递历史记录作为额外上下文
+    );
     
-    return {
-      type: 'terminalResponse',
-      timestamp: Date.now(),
-      payload: {
-        command,
-        output: analysisResult.content,
-        analysisType: analysisResult.type,
-        path,
-        success: analysisResult.success,
-        bypassedAI: false
-      }
-    };
-  } else if (analysisResult.type === 'script_execution') {
-    // 处理脚本执行类型
-    // 检查是否需要确认
-    if (analysisResult.requireConfirmation && analysisResult.isAwaitingConfirmation) {
+    // 如果命令生成了有意义的回复，更新历史记录
+    if (mcpResponse.type === 'ai_response') {
+      updateClientHistory(clientId, command, mcpResponse.content);
+    }
+    
+    // 根据MCP响应类型处理
+    if (mcpResponse.type === 'ai_response') {
+      // AI回答类型直接返回内容
       return {
         type: 'terminalResponse',
         timestamp: Date.now(),
         payload: {
           command,
-          output: analysisResult.content,
-          analysisType: 'confirmation_required',
+          output: mcpResponse.content,
+          analysisType: mcpResponse.type,
           path,
-          success: true,
-          awaitingConfirmation: true,
-          showPrompt: false // 不显示新的命令提示符
+          success: mcpResponse.success,
+          bypassedAI: false
         }
       };
-    }
-    
-    // 脚本已被确认执行
-    if (analysisResult.shouldExecute) {
-      // 获取SSH会话
-      const session = sshService.getSession(sessionInfo.sessionId);
-      if (!session) {
-        logger.error(`SSH session not found for client ${clientId}`);
-        clientSshSessions.delete(clientId);
+    } else if (mcpResponse.type === 'script_execution') {
+      // 脚本执行类型
+      if (mcpResponse.requireConfirmation && mcpResponse.isAwaitingConfirmation) {
         return {
           type: 'terminalResponse',
           timestamp: Date.now(),
           payload: {
             command,
-            output: 'SSH session not found or expired. Please reconnect.',
-            success: false
+            output: mcpResponse.content,
+            analysisType: 'confirmation_required',
+            path,
+            success: true,
+            awaitingConfirmation: true,
+            showPrompt: false
           }
         };
       }
       
-      try {
-        // 处理脚本内容和命令
-        const script = analysisResult.script || '';
-        const scriptType = analysisResult.scriptType || 'bash';
-        const commands = analysisResult.commands || [];
+      // 脚本已被确认执行
+      if (mcpResponse.shouldProcess) {
+        // 获取SSH会话
+        const session = sshService.getSession(sessionInfo.sessionId);
+        if (!session) {
+          logger.error(`SSH session not found for client ${clientId}`);
+          clientSshSessions.delete(clientId);
+          return {
+            type: 'terminalResponse',
+            timestamp: Date.now(),
+            payload: {
+              command,
+              output: 'SSH session not found or expired. Please reconnect.',
+              success: false
+            }
+          };
+        }
         
-        logger.info(`准备执行${scriptType}脚本，命令: ${commands.join(' && ')}`);
+        // 执行脚本
+        const metadata = mcpResponse.metadata || {};
+        const script = metadata.script || '';
+        const scriptType = metadata.scriptType || 'bash';
         
-        // 生成随机脚本文件名以避免冲突
+        // 生成随机脚本文件名
         const randomSuffix = Math.floor(Math.random() * 1000);
         const timestamp = new Date().getTime();
         const scriptFileName = `script_${timestamp}_${randomSuffix}.${scriptType === 'python' ? 'py' : 'sh'}`;
         
-        // 创建一个变量存储脚本内容，处理特殊字符转义
-        const escapedScript = script.replace(/"/g, '\\"').replace(/`/g, '\\`');
-        
-        // 构建保存脚本文件命令
+        // 保存和执行脚本
         const saveScriptCmd = `cat > ${scriptFileName} << 'EOL'\n${script}\nEOL\n`;
-        
-        // 构建执行命令
         let execCmd = '';
+        
         if (scriptType === 'python') {
           execCmd = `python ${scriptFileName}`;
         } else if (scriptType === 'node') {
@@ -469,7 +548,6 @@ async function processCommandWithAI(command: string, path: string, clientId: str
         } else if (scriptType === 'ruby') {
           execCmd = `ruby ${scriptFileName}`;
         } else {
-          // 默认为bash
           execCmd = `bash ${scriptFileName}`;
         }
         
@@ -482,7 +560,6 @@ async function processCommandWithAI(command: string, path: string, clientId: str
         // 写入执行命令
         session.write(`${execCmd}\n`);
         
-        // 命令已发送，返回响应
         return {
           type: 'terminalResponse',
           timestamp: Date.now(),
@@ -492,99 +569,84 @@ async function processCommandWithAI(command: string, path: string, clientId: str
             analysisType: 'script_execution',
             path,
             success: true,
-            showPrompt: false // 不显示提示符，等待SSH执行结果
+            showPrompt: false
           }
         };
-      } catch (error) {
-        logger.error(`执行脚本时出错: ${error}`);
+      } else {
+        // 脚本不应该执行
         return {
           type: 'terminalResponse',
           timestamp: Date.now(),
           payload: {
             command,
-            output: `执行脚本时出错: ${(error as Error).message}`,
+            output: mcpResponse.content,
+            analysisType: 'script_cancelled',
+            path,
             success: false
           }
         };
       }
-    } else {
-      // 脚本不应该执行（可能因为风险等原因）
-      return {
-        type: 'terminalResponse',
-        timestamp: Date.now(),
-        payload: {
-          command,
-          output: analysisResult.content,
-          analysisType: 'script_cancelled',
-          path,
-          success: false
-        }
-      };
-    }
-  } else if (analysisResult.type === 'bash_execution') {
-    // 检查是否需要确认
-    if (analysisResult.requireConfirmation && analysisResult.isAwaitingConfirmation) {
-      return {
-        type: 'terminalResponse',
-        timestamp: Date.now(),
-        payload: {
-          command,
-          output: analysisResult.content,
-          analysisType: 'confirmation_required',
-          path,
-          success: true,
-          awaitingConfirmation: true,
-          showPrompt: false // 不显示新的命令提示符
-        }
-      };
-    }
-    
-    // 普通命令执行
-    if (analysisResult.shouldExecute) {
-      // 获取SSH会话
-      const session = sshService.getSession(sessionInfo.sessionId);
-      if (!session) {
-        logger.error(`SSH session not found for client ${clientId}`);
-        clientSshSessions.delete(clientId);
+    } else if (mcpResponse.type === 'bash_execution' || mcpResponse.type === 'command_execution') {
+      // bash执行类型
+      if (mcpResponse.requireConfirmation && mcpResponse.isAwaitingConfirmation) {
         return {
           type: 'terminalResponse',
           timestamp: Date.now(),
           payload: {
             command,
-            output: 'SSH session not found or expired. Please reconnect.',
-            success: false
+            output: mcpResponse.content,
+            analysisType: 'confirmation_required',
+            path,
+            success: true,
+            awaitingConfirmation: true,
+            showPrompt: false
           }
         };
       }
       
-      try {
-        // 使用AI分析后的命令或原始命令
-        const cmdToExecute = analysisResult.command || command;
-        
-        // 记录日志
-        logger.info(`Executing command via SSH: ${cmdToExecute}`);
-        
-        // 向SSH会话发送命令
-        session.write(cmdToExecute + '\n');
-        
-        // AI对命令有优化或解释时，先显示AI的解释
-        if (analysisResult.content && analysisResult.command !== command) {
-          // 返回AI的解释，但不在终端显示提示符（因为SSH会返回数据）
+      // 命令已被确认执行
+      if (mcpResponse.shouldProcess) {
+        // 获取SSH会话
+        const session = sshService.getSession(sessionInfo.sessionId);
+        if (!session) {
+          logger.error(`SSH session not found for client ${clientId}`);
+          clientSshSessions.delete(clientId);
           return {
             type: 'terminalResponse',
             timestamp: Date.now(),
             payload: {
               command,
-              output: `AI优化：${analysisResult.content}\n执行命令: ${cmdToExecute}`,
-              analysisType: 'enhanced_execution',
-              path,
-              success: true,
-              showPrompt: false  // 不显示提示符，等待SSH响应
+              output: 'SSH session not found or expired. Please reconnect.',
+              success: false
             }
           };
         }
         
-        // 如果没有特别的解释，只发送命令到SSH
+        // 使用MCP提供的命令或原始命令
+        const metadata = mcpResponse.metadata || {};
+        const cmdToExecute = metadata.command || command;
+        
+        // 发送命令到SSH
+        logger.info(`Executing command via SSH: ${cmdToExecute}`);
+        session.write(cmdToExecute + '\n');
+        
+        // 如果有解释，先显示
+        if (mcpResponse.content && cmdToExecute !== command) {
+          return {
+            type: 'terminalResponse',
+            timestamp: Date.now(),
+            payload: {
+              command,
+              output: `${mcpResponse.content}\n执行命令: ${cmdToExecute}`,
+              analysisType: 'enhanced_execution',
+              path,
+              success: true,
+              showPrompt: false
+            }
+          };
+        }
+        
+        // 没有特别解释，只发送命令
         return {
           type: 'commandSent',
           timestamp: Date.now(),
@@ -595,47 +657,47 @@ async function processCommandWithAI(command: string, path: string, clientId: str
             success: true
           }
         };
-      } catch (error) {
-        logger.error(`Error sending command to SSH: ${error}`);
+      } else {
+        // 不应执行的命令，显示解释
         return {
           type: 'terminalResponse',
           timestamp: Date.now(),
           payload: {
             command,
-            output: `Error sending command: ${(error as Error).message}`,
+            output: mcpResponse.content,
+            analysisType: 'command_warning',
+            path,
             success: false
           }
         };
       }
     } else {
-      // AI认为不应执行的命令，显示AI的解释
-      updateClientHistory(clientId, command, analysisResult.content);
-      
+      // 其他类型的响应
       return {
         type: 'terminalResponse',
         timestamp: Date.now(),
         payload: {
           command,
-          output: analysisResult.content,
-          analysisType: 'command_warning',
+          output: mcpResponse.content,
+          analysisType: mcpResponse.type,
           path,
-          success: false
+          success: mcpResponse.success
         }
       };
     }
+  } catch (error) {
+    logger.error(`Error processing command through MCP: ${error}`);
+    return {
+      type: 'terminalResponse',
+      timestamp: Date.now(),
+      payload: {
+        command,
+        output: `处理命令出错: ${(error as Error).message}`,
+        path,
+        success: false
+      }
+    };
   }
-
-  // 如果无法确定类型，返回错误
-  return {
-    type: 'terminalResponse',
-    timestamp: Date.now(),
-    payload: {
-      command,
-      output: 'Error: Unable to determine command type',
-      path,
-      success: false
-    }
-  };
 }
 
 /**

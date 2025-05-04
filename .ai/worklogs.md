@@ -29,6 +29,34 @@
 
 ## 工作日志
 
+### 2024-05-11
+- ✅ 优化WebSocket与MCP集成架构
+  - 完成内容：
+    - 重构websocketService与MCP集成方式，使用mcpIntegrationService作为中心枢纽
+    - 优化命令处理流程，为不同命令类型分配最合适的处理服务
+    - 实现智能命令路由机制，引入canHandle置信度评分系统
+    - 改进命令跳过机制，简单命令无需经过AI分析直接执行
+    - 增强天气查询等专业命令的路由准确性
+    - 完善MCP服务确认机制，统一确认响应处理
+    - 升级CommandMCP服务的命令分类能力
+    - 添加uuid依赖，支持请求唯一标识
+  - 遇到的问题：
+    - WebSocket服务直接调用commandAnalysisService，绕过了MCP统一路由
+    - 缺少对专业命令（如天气查询）的有效识别和分流
+    - 命令确认机制跨服务通信复杂
+    - 简单命令不必要地经过AI分析导致效率低下
+  - 解决方案：
+    - 重构websocketService，将所有非简单命令通过mcpIntegrationService处理
+    - 在CommandMCP服务中增加isWeatherQuery等专业命令识别函数
+    - 优化canHandle方法，为不同类型命令提供差异化置信度
+    - 实现handleConfirmation方法统一处理确认响应
+    - 设计智能命令跳过逻辑，提高简单命令处理效率
+  - 下一步：
+    - 进一步优化MCP服务发现和动态加载机制
+    - 实现更多专业MCP服务（系统管理、文件操作等）
+    - 添加MCP服务性能监控和统计
+    - 完善MCP服务容错和降级机制
+
 ### 2024-05-04
 - ✅ 实现MCP插件架构和内置命令分析服务
   - 完成内容：

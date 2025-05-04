@@ -160,8 +160,8 @@ export class CommandMCPService extends BaseMCPService {
 
   /**
    * Check if this service can handle the given request.
-   * The CommandMCP service can handle all command inputs, so it returns
-   * a high confidence score for most inputs.
+   * The CommandMCP service can handle all command inputs, but with different
+   * confidence levels depending on the input.
    */
   async canHandle(context: MCPRequestContext): Promise<number> {
     const input = context.input.trim();
@@ -171,13 +171,58 @@ export class CommandMCPService extends BaseMCPService {
       return 0.9; // Very high confidence for confirmation responses
     }
     
+    // Check if this looks like a weather query
+    if (this.isWeatherQuery(input)) {
+      return 0.1; // Low confidence for weather queries (let the weather MCP handle it)
+    }
+    
     // Special handling for empty inputs
     if (!input) {
       return 0.1; // Low confidence, but can still handle
     }
     
-    // High confidence for all other inputs (this is a fallback service)
-    return 0.7;
+    // If it looks like a command (starts with common command prefixes)
+    if (this.looksLikeCommand(input)) {
+      return 0.8; // High confidence for commands
+    }
+    
+    // Medium confidence as fallback for other inputs
+    // This allows other specialized MCPs to handle specific domains
+    // But ensures this service can handle anything not claimed by others
+    return 0.5;
+  }
+
+  /**
+   * Check if the input looks like a weather query
+   */
+  private isWeatherQuery(input: string): boolean {
+    const weatherKeywords = [
+      '天气', '气温', '温度', '下雨', '阴天', '晴天', '多云',
+      'weather', 'temperature', 'rain', 'sunny', 'cloudy', 'forecast'
+    ];
+    
+    const normalizedInput = input.toLowerCase();
+    return weatherKeywords.some(keyword => normalizedInput.includes(keyword));
+  }
+
+  /**
+   * Check if the input looks like a command
+   */
+  private looksLikeCommand(input: string): boolean {
+    // Common command prefixes and patterns
+    const commandPatterns = [
+      /^(ls|cd|mkdir|rm|cp|mv|cat|grep|find|touch|chmod|chown|ps|kill|sudo)/i,
+      /^git\s/i,
+      /^npm\s/i,
+      /^docker\s/i,
+      /^python\s/i,
+      /^node\s/i,
+      /^ssh\s/i,
+      /^curl\s/i,
+      /^wget\s/i
+    ];
+    
+    return commandPatterns.some(pattern => pattern.test(input));
   }
 
   /**
