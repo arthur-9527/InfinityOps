@@ -148,10 +148,19 @@ export class SSHSessionImpl extends EventEmitter implements SSHSession {
       });
       
       // 连接成功，创建shell会话
+      // 增强PTY终端选项，确保完整的Shell体验
       const shellOptions: PseudoTtyOptions = {
         term: options?.term || 'xterm-256color',
         rows: options?.rows || 24,
         cols: options?.cols || 80,
+        // 添加更多PTY相关选项，确保原生Shell体验
+        modes: {
+          ECHO: 1,                // 本地回显
+          ICANON: 1,              // 启用规范模式（行编辑）
+          ISIG: 1,                // 启用信号（Ctrl+C等）
+          ICRNL: 1,               // 将CR转换为NL
+          ONLCR: 0                // 不将NL转换为CRNL
+        }
       };
       
       logger.info(`创建SSH shell会话: ${JSON.stringify(shellOptions)}`);
@@ -170,6 +179,7 @@ export class SSHSessionImpl extends EventEmitter implements SSHSession {
 
           // 转发数据事件
           channel.on('data', (data: Buffer) => {
+            // 直接转发原始数据，不做任何修改
             this.emit('data', data.toString('utf8'));
           });
           
@@ -228,7 +238,10 @@ export class SSHSessionImpl extends EventEmitter implements SSHSession {
       return;
     }
     
+    // 不记录敏感数据内容，只记录长度
     logger.debug(`写入数据: ${data.length}字节`);
+    
+    // 直接将数据写入SSH通道，不做任何处理
     this.channel.write(data);
   }
   

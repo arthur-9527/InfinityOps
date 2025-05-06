@@ -18,7 +18,7 @@ function App() {
         </div>
         {/* <WebSocketStatus /> */}
         <div className="terminal-body">
-          <Terminal initialCommand="Last login: Wed Jun  3 21:56:14 on ttys003\ntest@server ~ $ " />
+          <Terminal initialCommand="Last login: Wed Jun  3 21:56:14 on ttys003\r\nWelcome to InfinityOps Terminal\r\n\r\nPlease connect to a remote server using SSH.\r\nExample: ssh username@hostname\r\n\r\n[ssh]: " />
         </div>
       </div>
     </div>

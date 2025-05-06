@@ -18,7 +18,8 @@
     "lint": "pnpm eslint . --ext .ts",
     "format": "pnpm prettier --write \"src/**/*.ts\"",
     "test:ssh": "ts-node src/scripts/test-ssh.ts",
-    "test:ssh-direct": "ts-node src/scripts/test-ssh-direct.ts"
+    "test:ssh-direct": "ts-node src/scripts/test-ssh-direct.ts",
+    "test:ssh-forward": "node src/tests/ssh-forward.test.js"
   },
   "keywords": [],
   "author": "",

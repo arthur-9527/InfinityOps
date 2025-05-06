@@ -24,6 +24,11 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
   const [sshConnectionDetails, setSshConnectionDetails] = useState<any>(null);
   const [passwordBuffer, setPasswordBuffer] = useState<string>('');
   const [passwordMode, setPasswordMode] = useState<boolean>(false);
+  const [ctrlCPressed, setCtrlCPressed] = useState<boolean>(false);
+  const ctrlCTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [inInteractiveMode, setInInteractiveMode] = useState<boolean>(false);
+  const [currentInteractiveCommand, setCurrentInteractiveCommand] = useState<string>('');
+  const lastKeyRef = useRef<{key: string, time: number} | null>(null);
   
   // Main effect for setup and websocket connections
   useEffect(() => {
@@ -42,7 +47,7 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
         xtermRef.current.write(`${message.payload.output}\r\n`);
         
         // 只有当明确不显示提示符时才不显示
-        // 这允许AI在转发命令到SSH之前显示解释，而不显示提示符
+        // 某些命令响应可能不需要显示提示符
         if (message.payload.showPrompt !== false) {
           // 显示新的提示符
           xtermRef.current.write(terminalService.getPrompt());
@@ -55,7 +60,7 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
       if (xtermRef.current && message.payload) {
         setAwaitingPassword(true);
         setSshConnectionDetails(message.payload);
-        xtermRef.current.write('\r\nPassword: ');
+        xtermRef.current.write('Password: ');
         setPasswordMode(true);
         setPasswordBuffer('');
       }
@@ -93,10 +98,24 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
       console.log('Command sent to SSH server:', message.payload?.command);
     });
     
+    // 处理交互式命令开始消息
+    const unsubInteractiveCommandStarted = webSocketService.onMessage('interactiveCommandStarted', (message) => {
+      if (message.payload && message.payload.command) {
+        console.log('交互式命令开始:', message.payload.command);
+        setInInteractiveMode(true);
+        setCurrentInteractiveCommand(message.payload.command);
+        // 清空输入缓冲区以避免干扰交互式程序
+        setInputBuffer('');
+      }
+    });
+    
     // Handle SSH disconnection
     const unsubSshDisconnected = webSocketService.onMessage('sshDisconnected', (message) => {
       if (xtermRef.current) {
         setSshConnected(false);
+        // 退出交互模式
+        setInInteractiveMode(false);
+        setCurrentInteractiveCommand('');
         // Update terminal service
         terminalService.setSshConnection(false);
         xtermRef.current.write('\r\nSSH connection closed\r\n');
@@ -129,6 +148,17 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
         xtermRef.current.focus();
       }
     }, 150);
+    
+    // Add welcome message and SSH connection prompt
+    if (xtermRef.current && !initialCommand) {
+      setTimeout(() => {
+        if (!sshConnected) {
+          const welcomeMsg = "\r\nWelcome to InfinityOps Terminal\r\n\r\n";
+          const connectMsg = "Please connect to a remote server using SSH.\r\nExample: ssh username@hostname\r\n\r\n";
+          xtermRef.current.write(welcomeMsg + connectMsg + terminalService.getPrompt());
+        }
+      }, 200);
+    }
     
     // If there's an initial command, execute it
     if (initialCommand && xtermRef.current) {
@@ -200,7 +230,14 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
       unsubSshData();
       unsubSshDisconnected();
       unsubCommandSent();
+      unsubInteractiveCommandStarted();
       webSocketService.disconnect();
+      
+      // 清除Ctrl+C定时器
+      if (ctrlCTimeoutRef.current) {
+        clearTimeout(ctrlCTimeoutRef.current);
+        ctrlCTimeoutRef.current = null;
+      }
     };
   }, [initialCommand]);
   
@@ -218,6 +255,14 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
       }, 100);
     }
   }, [sshConnected]);
+  
+  // Effect to update terminal when entering/exiting interactive mode
+  useEffect(() => {
+    if (inInteractiveMode && xtermRef.current) {
+      // Ensure terminal has focus when entering interactive mode
+      xtermRef.current.focus();
+    }
+  }, [inInteractiveMode]);
   
   const handleTerminalRef = (term: any) => {
     xtermRef.current = term;
@@ -254,14 +299,38 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
   // 发送命令到后端服务器
   const sendCommandToServer = (command: string) => {
     if (isConnected) {
-      webSocketService.send('terminalCommand', { 
-        command,
-        path: terminalService.getPath(),
-        timestamp: Date.now()
-      });
-      return true;
+      // 无论是否已连接SSH，都允许发送ssh命令
+      if (command.trim().toLowerCase().startsWith('ssh ')) {
+        webSocketService.send('terminalCommand', { 
+          command,
+          path: terminalService.getPath(),
+          timestamp: Date.now()
+        });
+        return true;
+      }
+      
+      // 如果已经连接到SSH，直接发送普通命令
+      if (sshConnected) {
+        webSocketService.send('terminalCommand', {
+          command,
+          path: terminalService.getPath(),
+          timestamp: Date.now()
+        });
+        return true;
+      }
+      
+      // 如果未连接SSH，且命令不是SSH连接命令，显示错误
+      if (xtermRef.current) {
+        xtermRef.current.write('\r\nError: Not connected to SSH server.\r\nPlease connect first using: ssh username@host\r\n');
+        xtermRef.current.write(terminalService.getPrompt());
+      }
+      return false;
     } else {
-      console.warn('WebSocket not connected. Using local command processing.');
+      // WebSocket未连接，无法发送任何命令
+      if (xtermRef.current) {
+        xtermRef.current.write('\r\nWebSocket not connected. Cannot execute commands.\r\n');
+        xtermRef.current.write(terminalService.getPrompt());
+      }
       return false;
     }
   };
@@ -278,37 +347,186 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
     }
   };
   
+  // 处理Ctrl+C键盘事件
+  const handleCtrlC = () => {
+    const term = xtermRef.current;
+    if (!term) return;
+    
+    // 写入^C到终端
+    term.write('^C\r\n');
+    
+    // 如果在密码输入模式，取消密码输入并返回提示符
+    if (passwordMode) {
+      setPasswordMode(false);
+      setPasswordBuffer('');
+      setAwaitingPassword(false);
+      term.write('已取消SSH密码输入\r\n');
+      term.write(terminalService.getPrompt());
+      return;
+    }
+    
+    // 如果处于交互模式，发送Ctrl+C到SSH服务器并退出交互模式
+    if (inInteractiveMode && sshConnected) {
+      // 发送Ctrl+C到SSH服务器
+      sendKeyToSSH(String.fromCharCode(3));
+      return;
+    }
+    
+    // 如果有正在输入的命令，清空输入缓冲区并显示新的提示符
+    if (inputBuffer.length > 0) {
+      setInputBuffer('');
+      term.write(terminalService.getPrompt());
+      return;
+    }
+    
+    // 如果连接到SSH，在没有任务或命令时，断开连接
+    // 否则发送中断信号 (Ctrl+C)
+    if (sshConnected) {
+      // 检查是否是连续的第二次Ctrl+C按下
+      if (ctrlCPressed) {
+        // 如果是第二次按下Ctrl+C，断开SSH连接
+        term.write('检测到连续按下Ctrl+C，正在断开SSH连接...\r\n');
+        disconnectSsh();
+        
+        // 重置Ctrl+C状态
+        setCtrlCPressed(false);
+        if (ctrlCTimeoutRef.current) {
+          clearTimeout(ctrlCTimeoutRef.current);
+          ctrlCTimeoutRef.current = null;
+        }
+      } else {
+        // 第一次按下Ctrl+C，发送中断信号
+        if (webSocketService.isConnected()) {
+          webSocketService.send('terminalCommand', { 
+            command: String.fromCharCode(3), // Ctrl+C ASCII值
+            path: terminalService.getPath(),
+            timestamp: Date.now()
+          });
+          
+          // 设置ctrlCPressed状态为true，表示已经按下了一次Ctrl+C
+          setCtrlCPressed(true);
+          
+          // 显示提示消息
+          term.write('再次按下Ctrl+C将断开SSH连接\r\n');
+          
+          // 设置一个3秒后重置状态的定时器
+          if (ctrlCTimeoutRef.current) {
+            clearTimeout(ctrlCTimeoutRef.current);
+          }
+          
+          ctrlCTimeoutRef.current = setTimeout(() => {
+            setCtrlCPressed(false);
+            ctrlCTimeoutRef.current = null;
+          }, 3000);
+        } else {
+          // WebSocket未连接，直接断开SSH
+          disconnectSsh();
+        }
+      }
+    } else {
+      // 未连接SSH，仅显示新的提示符
+      term.write(terminalService.getPrompt());
+    }
+  };
+  
+  // 处理SSH断开连接
+  const disconnectSsh = () => {
+    if (sshConnected) {
+      try {
+        // 尝试发送断开连接命令
+        const sendSuccess = webSocketService.send('sshDisconnect', {});
+        
+        const term = xtermRef.current;
+        if (term) {
+          if (sendSuccess) {
+            term.write('\r\n正在断开SSH连接...\r\n');
+          } else {
+            // 发送失败但仍在SSH连接状态，本地更新状态
+            term.write('\r\n无法发送断开命令，正在本地断开连接...\r\n');
+            setSshConnected(false);
+            terminalService.setSshConnection(false);
+            term.write(terminalService.getPrompt());
+          }
+        }
+      } catch (error) {
+        console.error('断开SSH连接时出错:', error);
+        // 强制更新本地状态
+        setSshConnected(false);
+        terminalService.setSshConnection(false);
+        
+        if (xtermRef.current) {
+          xtermRef.current.write('\r\n断开SSH连接时出错，已强制断开\r\n');
+          xtermRef.current.write(terminalService.getPrompt());
+        }
+      }
+    }
+  };
+  
+  // 处理用户输入
   const handleUserInput = (data: string) => {
     const term = xtermRef.current;
     if (!term) return;
     
     try {
-      // Handle special key presses
+      // 检测Ctrl+C (ASCII码为3)
+      if (data.charCodeAt(0) === 3) {
+        handleCtrlC();
+        return;
+      }
+      
+      // 密码模式处理
+      if (passwordMode) {
+        const code = data.charCodeAt(0);
+        const isEnter = code === 13; // Enter key
+        const isBackspace = code === 127 || code === 8; // Backspace key
+        
+        if (isEnter) {
+          // 提交密码
+          term.write('\r\n');
+          submitSshPassword();
+          return;
+        } else if (isBackspace) {
+          // 处理退格键（不显示字符删除）
+          if (passwordBuffer.length > 0) {
+            setPasswordBuffer(prev => prev.substring(0, prev.length - 1));
+          }
+          return;
+        } else {
+          // 添加字符到密码缓冲区但不显示
+          setPasswordBuffer(prev => prev + data);
+          return;
+        }
+      }
+      
+      // SSH连接模式 - 所有输入直接发送到SSH
+      if (sshConnected) {
+        // 特殊键处理
+        const code = data.charCodeAt(0);
+        
+        // 获取当前时间用于防重复
+        const now = Date.now();
+        const lastKey = lastKeyRef.current;
+        
+        // 对于相同的按键，时间间隔过短可能是重复，跳过
+        if (lastKey && lastKey.key === data && now - lastKey.time < 100) {
+          console.log('忽略可能重复的按键:', data);
+          return;
+        }
+        
+        // 更新最后按键记录
+        lastKeyRef.current = { key: data, time: now };
+        
+        // 直接发送输入到SSH服务器
+        sendKeyToSSH(data);
+        return;
+      }
+      
+      // 非SSH模式下的本地处理逻辑
       const code = data.charCodeAt(0);
       const isEnter = code === 13; // Enter key
       const isBackspace = code === 127 || code === 8; // Backspace key
       const isUpArrow = data === '\x1b[A';
       const isDownArrow = data === '\x1b[B';
-      
-      // Special handling for password mode
-      if (passwordMode) {
-        if (isEnter) {
-          // Submit password
-          term.write('\r\n');
-          submitSshPassword();
-          return;
-        } else if (isBackspace) {
-          // Handle backspace in password mode (don't show character deletion)
-          if (passwordBuffer.length > 0) {
-            setPasswordBuffer(prev => prev.substring(0, prev.length - 1));
-          }
-          return;
-        } else if (!isUpArrow && !isDownArrow) {
-          // Add character to password buffer but don't display
-          setPasswordBuffer(prev => prev + data);
-          return;
-        }
-      }
       
       if (isEnter) {
         // Process the command
@@ -319,30 +537,19 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
           setCommandHistory(prev => [...prev, inputBuffer]);
           setHistoryIndex(-1);
           
-          // Check if we're connected to SSH
-          if (!sshConnected && !inputBuffer.trim().toLowerCase().startsWith('ssh ')) {
-            // Not connected to SSH and not an SSH connect command
-            term.write('Error: Not connected to remote server. Please connect first using: ssh username@host\r\n');
+          // 发送命令到服务器，检查是否是SSH命令
+          if (inputBuffer.trim().toLowerCase().startsWith('ssh ')) {
+            // 显示连接中消息
+            term.write(`Connecting... ${inputBuffer}\r\n`);
+            sendCommandToServer(inputBuffer);
+          } else {
+            // 非SSH命令提示
+            term.write('\r\nError: Not connected to SSH server.\r\nPlease connect first using: ssh username@host\r\n');
             term.write(terminalService.getPrompt());
-            setInputBuffer('');
-            return;
           }
           
-          // 尝试通过WebSocket发送命令
-          const sentToServer = sendCommandToServer(inputBuffer);
-
-          // 如果WebSocket未连接或发送失败，使用本地处理
-          if (!sentToServer) {
-            // 本地处理命令
-            const output = terminalService.processCommand(inputBuffer);
-            if (output) {
-              term.write(output + '\r\n');
-            }
-            
-            // 立即显示新的提示符
-            term.write(terminalService.getPrompt());
-          }
-          // WebSocket连接时，不立即显示提示符，等待服务器响应后显示
+          // 重置输入缓冲区
+          setInputBuffer('');
         } else {
           // 空命令，直接显示提示符
           term.write(terminalService.getPrompt());
@@ -412,7 +619,7 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
           setHistoryIndex(-1);
         }
       } else {
-        // Normal character input
+        // Normal character input - 允许任何输入，包括ssh命令
         term.write(data);
         setInputBuffer(prev => prev + data);
         
@@ -422,6 +629,27 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
     } catch (err) {
       console.error('Error handling user input:', err);
       setError(`Input error: ${err}`);
+    }
+  };
+  
+  // 直接发送按键到SSH服务器
+  const sendKeyToSSH = (key: string) => {
+    if (!sshConnected || !webSocketService.isConnected()) {
+      return false;
+    }
+    
+    try {
+      // 发送按键数据到服务器
+      webSocketService.send('terminalCommand', {
+        command: key,
+        path: terminalService.getPath(),
+        timestamp: Date.now(),
+        isRawInput: true  // 标记这是原始输入，不需要加换行符
+      });
+      return true;
+    } catch (error) {
+      console.error('发送按键到SSH服务器失败:', error);
+      return false;
     }
   };
   

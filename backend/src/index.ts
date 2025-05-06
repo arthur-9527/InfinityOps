@@ -15,6 +15,7 @@ server.listen(port, () => {
 
 // Start WebSocket server
 const wss = createWebSocketServer();
+logger.info('Terminal commands will be directly forwarded to SSH server (AI analysis disabled)');
 
 // Graceful shutdown
 process.on('SIGTERM', () => {

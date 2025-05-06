@@ -52,7 +52,7 @@ export class TerminalService {
       // 始终使用统一的主机名显示，而不是实际的IP或主机名
       return `${this.sshUsername}@${this.displayHost}:${this.path}$ `;
     }
-    return `${this.username} ${this.path} $ `;
+    return `[ssh]: `;
   }
 
   /**

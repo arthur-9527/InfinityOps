@@ -4,8 +4,6 @@ import { createModuleLogger } from '../utils/logger';
 import { config } from '../config';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { commandAnalysisService } from './commandAnalysisService';
-import { AIMessage } from '../modules/ai/ai.interface';
 import { SSHServiceImpl } from './ssh/sshService';
 import { SSHConnectionConfig } from './ssh/ssh.interface';
 
@@ -21,9 +19,25 @@ const clientSshSessions = new Map<string, { sessionId: string, connected: boolea
 // SSH service instance
 const sshService = new SSHServiceImpl();
 
-// Message history for AI context (keep limited history per client)
-const clientMessageHistory = new Map<string, AIMessage[]>();
-const MAX_HISTORY_LENGTH = 10;
+// 交互式命令列表
+const INTERACTIVE_COMMANDS = [
+  'nano', 'vim', 'vi', 'less', 'more', 'top', 'htop', 'pico', 
+  'emacs', 'joe', 'jed', 'mc', 'watch', 'tail -f', 'man'
+];
+
+// 检查命令是否是交互式命令
+function isInteractiveCommand(cmd: string): boolean {
+  const trimmedCmd = cmd.trim();
+  return INTERACTIVE_COMMANDS.some(ic => 
+    trimmedCmd === ic || 
+    trimmedCmd.startsWith(`${ic} `) ||
+    // 增加对vim/nano文件名的支持
+    (ic === 'vim' && /^vim\s+\S+/.test(trimmedCmd)) ||
+    (ic === 'nano' && /^nano\s+\S+/.test(trimmedCmd)) ||
+    (ic === 'less' && /^less\s+\S+/.test(trimmedCmd)) ||
+    (ic === 'more' && /^more\s+\S+/.test(trimmedCmd))
+  );
+}
 
 /**
  * Process SSH connection command
@@ -49,7 +63,7 @@ async function processSshConnectionCommand(command: string, clientId: string): P
   const username = match[2];
   const host = match[3];
   
-  logger.info(`Attempting SSH connection: ${username}@${host}:${port}`);
+  logger.info(`[SSH CONNECTION REQUEST] ${clientId}: ${username}@${host}:${port}`);
   
   try {
     // Close existing session if any
@@ -102,25 +116,33 @@ async function processSshConnectionCommand(command: string, clientId: string): P
  */
 async function completeSshConnection(clientId: string, config: SSHConnectionConfig): Promise<any> {
   try {
-    logger.info(`Connecting to SSH: ${config.username}@${config.host}:${config.port}`);
+    logger.info(`[SSH AUTH ATTEMPT] ${clientId}: ${config.username}@${config.host}:${config.port}`);
     
-    // Create a new SSH session
+    // 创建一个新的SSH会话，使用固定的终端大小
+    const TERM_COLS = 80;
+    const TERM_ROWS = 24;
+    
+    // 创建会话
     const session = await sshService.createSession(config, {
-      rows: 24,
-      cols: 80,
+      rows: TERM_ROWS,
+      cols: TERM_COLS,
       term: 'xterm-256color'
     });
     
-    // Store session info
+    // 存储会话信息
     clientSshSessions.set(clientId, {
       sessionId: session.id,
       connected: true
     });
     
-    // Set up data event forwarding
+    // 设置数据事件转发
     session.on('data', (data: string) => {
+      // 记录SSH输出
+      logger.info(`[SSH OUTPUT] ${clientId}: ${data.replace(/\r\n/g, '\\r\\n').replace(/\n/g, '\\n')}`);
+      
       const client = clients.get(clientId);
       if (client && client.readyState === WebSocket.OPEN) {
+        // 直接将SSH输出传递给客户端，不做任何处理
         client.send(JSON.stringify({
           type: 'sshData',
           timestamp: Date.now(),
@@ -131,8 +153,9 @@ async function completeSshConnection(clientId: string, config: SSHConnectionConf
       }
     });
     
-    // Handle session close
+    // 处理会话关闭
     session.on('close', () => {
+      logger.info(`[SSH SESSION CLOSED] ${clientId}`);
       clientSshSessions.delete(clientId);
       const client = clients.get(clientId);
       if (client && client.readyState === WebSocket.OPEN) {
@@ -146,7 +169,7 @@ async function completeSshConnection(clientId: string, config: SSHConnectionConf
       }
     });
     
-    logger.info(`SSH connection established for client ${clientId}`);
+    logger.info(`[SSH CONNECTION ESTABLISHED] ${clientId}: ${config.username}@${config.host}:${config.port}`);
     return {
       type: 'sshConnected',
       timestamp: Date.now(),
@@ -154,11 +177,13 @@ async function completeSshConnection(clientId: string, config: SSHConnectionConf
         sessionId: session.id,
         host: config.host,
         username: config.username,
-        displayHost: 'server'
+        displayHost: 'server',
+        termRows: TERM_ROWS,
+        termCols: TERM_COLS
       }
     };
   } catch (error) {
-    logger.error(`SSH connection failed: ${error}`);
+    logger.error(`[SSH CONNECTION FAILED] ${clientId}: ${error}`);
     clientSshSessions.delete(clientId);
     return {
       type: 'terminalResponse',
@@ -203,10 +228,13 @@ async function processSshCommand(command: string, clientId: string): Promise<any
   }
   
   try {
-    // Send command to SSH session
+    // 记录SSH输入
+    logger.info(`[SSH INPUT] ${clientId}: ${command}`);
+    
+    // 直接将命令发送到SSH会话，始终添加换行符
     session.write(command + '\n');
     
-    // No immediate response, as the output will come through the SSH data event
+    // 命令已发送的通知
     return {
       type: 'commandSent',
       timestamp: Date.now(),
@@ -266,182 +294,64 @@ async function processTerminalCommand(command: string, path: string): Promise<st
 }
 
 /**
- * Process terminal command through AI analysis and then forward to SSH
+ * Process raw input from interactive terminal
  */
-async function processCommandWithAI(command: string, path: string, clientId: string): Promise<any> {
-  // SSH连接命令处理
-  if (command.trim().toLowerCase().startsWith('ssh ')) {
-    return processSshConnectionCommand(command, clientId);
-  }
-  
-  // 获取命令历史记录
-  const history = clientMessageHistory.get(clientId) || [];
-  logger.info(`Command history for client ${clientId}: ${JSON.stringify(history)}`);
-  logger.info(`Command: ${command}`);
-  logger.info(`Path: ${path}`);
-  
-  // 检查SSH连接状态
+async function processRawInput(command: string, clientId: string): Promise<any> {
   const sessionInfo = clientSshSessions.get(clientId);
-  const isConnected = sessionInfo && sessionInfo.connected;
-  
-  // 未连接SSH时，显示错误提示
-  if (!isConnected) {
+  if (!sessionInfo || !sessionInfo.connected) {
+    logger.warn(`Client ${clientId} not connected to SSH but sending raw input`);
     return {
       type: 'terminalResponse',
       timestamp: Date.now(),
       payload: {
-        command,
-        output: 'No active SSH connection. Please connect first using: ssh username@host',
+        output: 'No active SSH connection for raw input.',
         success: false
       }
     };
   }
   
-  // 使用AI分析命令
-  const analysisResult = await commandAnalysisService.analyzeCommand(command, path, history);
-  
-  // 根据AI分析结果处理命令
-  if (analysisResult.type === 'ai_response') {
-    // AI回答类型直接返回AI的回答
-    updateClientHistory(clientId, command, analysisResult.content);
-    
+  const session = sshService.getSession(sessionInfo.sessionId);
+  if (!session) {
+    logger.error(`SSH session not found for client ${clientId}`);
+    clientSshSessions.delete(clientId);
     return {
       type: 'terminalResponse',
       timestamp: Date.now(),
       payload: {
-        command,
-        output: analysisResult.content,
-        analysisType: analysisResult.type,
-        path,
-        success: analysisResult.success,
-        bypassedAI: false
+        output: 'SSH session lost. Please reconnect.',
+        success: false
       }
     };
-  } else if (analysisResult.type === 'bash_execution') {
-    // 命令执行类型
-    if (analysisResult.shouldExecute) {
-      // 获取SSH会话
-      const session = sshService.getSession(sessionInfo.sessionId);
-      if (!session) {
-        logger.error(`SSH session not found for client ${clientId}`);
-        clientSshSessions.delete(clientId);
-        return {
-          type: 'terminalResponse',
-          timestamp: Date.now(),
-          payload: {
-            command,
-            output: 'SSH session not found or expired. Please reconnect.',
-            success: false
-          }
-        };
-      }
-      
-      try {
-        // 使用AI分析后的命令或原始命令
-        const cmdToExecute = analysisResult.command || command;
-        
-        // 记录日志
-        logger.info(`Executing command via SSH: ${cmdToExecute}`);
-        
-        // 向SSH会话发送命令
-        session.write(cmdToExecute + '\n');
-        
-        // AI对命令有优化或解释时，先显示AI的解释
-        if (analysisResult.content && analysisResult.command !== command) {
-          // 返回AI的解释，但不在终端显示提示符（因为SSH会返回数据）
-          return {
-            type: 'terminalResponse',
-            timestamp: Date.now(),
-            payload: {
-              command,
-              output: `AI优化：${analysisResult.content}\n执行命令: ${cmdToExecute}`,
-              analysisType: 'enhanced_execution',
-              path,
-              success: true,
-              showPrompt: false  // 不显示提示符，等待SSH响应
-            }
-          };
-        }
-        
-        // 如果没有特别的解释，只发送命令到SSH
-        return {
-          type: 'commandSent',
-          timestamp: Date.now(),
-          payload: {
-            command: cmdToExecute,
-            originalCommand: command,
-            aiEnhanced: cmdToExecute !== command,
-            success: true
-          }
-        };
-      } catch (error) {
-        logger.error(`Error sending command to SSH: ${error}`);
-        return {
-          type: 'terminalResponse',
-          timestamp: Date.now(),
-          payload: {
-            command,
-            output: `Error sending command: ${(error as Error).message}`,
-            success: false
-          }
-        };
-      }
-    } else {
-      // AI认为不应执行的命令，显示AI的解释
-      updateClientHistory(clientId, command, analysisResult.content);
-      
-      return {
-        type: 'terminalResponse',
-        timestamp: Date.now(),
-        payload: {
-          command,
-          output: analysisResult.content,
-          analysisType: 'command_warning',
-          path,
-          success: false,
-          bypassedAI: false
-        }
-      };
-    }
   }
   
-  // 兜底处理
-  return {
-    type: 'terminalResponse',
-    timestamp: Date.now(),
-    payload: {
-      command,
-      output: 'Command could not be processed.',
-      success: false
-    }
-  };
-}
-
-/**
- * Update client conversation history
- */
-function updateClientHistory(clientId: string, userCommand: string, aiResponse: string): void {
-  // Get existing history or initialize new one
-  let history = clientMessageHistory.get(clientId) || [];
-  
-  // Add new messages
-  history.push({ role: 'user', content: userCommand });
-  history.push({ role: 'assistant', content: aiResponse });
-  
-  // Keep history length limited
-  if (history.length > MAX_HISTORY_LENGTH * 2) { // *2 because each exchange is 2 messages
-    history = history.slice(-MAX_HISTORY_LENGTH * 2);
+  try {
+    // 记录SSH原始输入（如键盘按键）
+    // 对于不可打印字符，转换为其ASCII码表示
+    const printableCommand = command.split('').map(char => {
+      const code = char.charCodeAt(0);
+      if (code < 32 || code === 127) { // 控制字符
+        return `[CTRL:${code}]`;
+      }
+      return char;
+    }).join('');
+    
+    logger.info(`[SSH RAW INPUT] ${clientId}: ${printableCommand}`);
+    
+    // 直接发送原始输入到SSH会话，不做任何处理
+    session.write(command);
+    // 不需要响应，SSH的响应将通过数据事件发送回客户端
+    return null;
+  } catch (error) {
+    logger.error(`Error sending raw input to SSH: ${error}`);
+    return {
+      type: 'terminalResponse',
+      timestamp: Date.now(),
+      payload: {
+        output: `Error sending input: ${(error as Error).message}`,
+        success: false
+      }
+    };
   }
-  
-  // Update history in the map
-  clientMessageHistory.set(clientId, history);
-}
-
-/**
- * Clear client conversation history
- */
-function clearClientHistory(clientId: string): void {
-  clientMessageHistory.delete(clientId);
 }
 
 /**
@@ -504,13 +414,48 @@ export function createWebSocketServer(): WebSocketServer {
           case 'terminalCommand':
             // 处理终端命令
             if (data.payload && data.payload.command) {
-              const { command, path = '~' } = data.payload;
-              logger.info(`Terminal command received: ${command}`);
+              const { command, path = '~', isRawInput = false } = data.payload;
+              logger.info(`Terminal command received: ${isRawInput ? 'raw input' : command}`);
               
               try {
-                // Process through AI instead of direct execution
-                const response = await processCommandWithAI(command, path, clientId);
-                ws.send(JSON.stringify(response));
+                let response;
+                
+                // 检查是否是SSH连接请求
+                if (command.trim().toLowerCase().startsWith('ssh ')) {
+                  response = await processSshConnectionCommand(command, clientId);
+                } 
+                // 如果是已连接SSH的原始输入（字符按键）
+                else if (isRawInput) {
+                  response = await processRawInput(command, clientId);
+                } 
+                // 如果已连接SSH的完整命令
+                else if (clientSshSessions.get(clientId)?.connected) {
+                  response = await processSshCommand(command, clientId);
+                }
+                // 非SSH连接时的本地命令
+                else {
+                  // 使用本地终端处理
+                  const output = await processTerminalCommand(command, path);
+                  
+                  // 记录本地命令及输出
+                  logger.info(`[LOCAL CMD] ${clientId}: ${command}`);
+                  logger.info(`[LOCAL OUTPUT] ${clientId}: ${output.substring(0, 500)}${output.length > 500 ? '...(truncated)' : ''}`);
+                  
+                  response = {
+                    type: 'terminalResponse',
+                    timestamp: Date.now(),
+                    payload: {
+                      command,
+                      output,
+                      success: true
+                    }
+                  };
+                }
+                
+                // 只有当response不为null时才发送响应
+                if (response) {
+                  ws.send(JSON.stringify(response));
+                }
               } catch (cmdError) {
                 logger.error(`Failed to process terminal command: ${cmdError}`);
                 ws.send(JSON.stringify({
@@ -537,18 +482,6 @@ export function createWebSocketServer(): WebSocketServer {
             }
             break;
             
-          case 'clearHistory':
-            // Clear conversation history for this client
-            clearClientHistory(clientId);
-            ws.send(JSON.stringify({
-              type: 'historyCleared',
-              timestamp: Date.now(),
-              payload: {
-                success: true
-              }
-            }));
-            break;
-            
           case 'sshPasswordAuth':
             if (data.payload && data.payload.password) {
               const sessionInfo = clientSshSessions.get(clientId);
@@ -565,6 +498,9 @@ export function createWebSocketServer(): WebSocketServer {
               }
                 
               const { host, port, username } = data.payload;
+              // 记录密码认证尝试，不记录密码内容
+              logger.info(`[SSH PASSWORD AUTH] ${clientId}: ${username}@${host}:${port}`);
+              
               const config: SSHConnectionConfig = {
                 host,
                 port,
@@ -576,6 +512,7 @@ export function createWebSocketServer(): WebSocketServer {
                 const response = await completeSshConnection(clientId, config);
                 ws.send(JSON.stringify(response));
               } catch (error) {
+                logger.error(`[SSH AUTH ERROR] ${clientId}: ${(error as Error).message}`);
                 ws.send(JSON.stringify({
                   type: 'terminalResponse',
                   timestamp: Date.now(),
@@ -594,6 +531,7 @@ export function createWebSocketServer(): WebSocketServer {
               if (sessionInfo && sessionInfo.connected) {
                 const session = sshService.getSession(sessionInfo.sessionId);
                 if (session) {
+                  logger.info(`[SSH RESIZE] ${clientId}: rows=${data.payload.rows}, cols=${data.payload.cols}`);
                   session.resize(data.payload.rows, data.payload.cols);
                 }
               }
@@ -603,6 +541,7 @@ export function createWebSocketServer(): WebSocketServer {
           case 'sshDisconnect':
             const sessionInfo = clientSshSessions.get(clientId);
             if (sessionInfo && sessionInfo.sessionId) {
+              logger.info(`[SSH DISCONNECT REQUEST] ${clientId}`);
               await sshService.closeSession(sessionInfo.sessionId);
               clientSshSessions.delete(clientId);
               ws.send(JSON.stringify({
@@ -641,8 +580,15 @@ export function createWebSocketServer(): WebSocketServer {
       logger.info(`Client disconnected: ${clientId}, code: ${code}`);
       clients.delete(clientId);
       
-      // Clean up client history when disconnected
-      clearClientHistory(clientId);
+      // Close any SSH sessions for this client
+      const sessionInfo = clientSshSessions.get(clientId);
+      if (sessionInfo && sessionInfo.sessionId) {
+        logger.info(`[SSH SESSION CLEANUP] ${clientId}`);
+        sshService.closeSession(sessionInfo.sessionId).catch(err => {
+          logger.error(`Error closing SSH session: ${err}`);
+        });
+        clientSshSessions.delete(clientId);
+      }
     });
 
     // 处理连接错误
@@ -667,7 +613,7 @@ export function createWebSocketServer(): WebSocketServer {
     clients.clear();
     
     // Clear all client histories
-    clientMessageHistory.clear();
+    clientSshSessions.clear();
   });
 
   return wss;
