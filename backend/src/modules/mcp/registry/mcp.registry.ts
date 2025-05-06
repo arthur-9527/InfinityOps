@@ -200,6 +200,47 @@ export class MCPRegistry {
       // Process the request with the selected service
       const response = await selectedService.process(context);
       
+      // 处理AI路由决策 - 如果是路由决策类型，并且指示应该重新路由
+      if (response.type === 'routing_decision' && response.shouldRoute === true && response.metadata?.targetServiceId) {
+        const targetServiceId = response.metadata.targetServiceId;
+        const targetService = this.services.get(targetServiceId);
+        
+        if (targetService) {
+          // 记录路由重定向
+          logger.info(`AI路由决策: 从 ${selectedService.id} 重定向到 ${targetServiceId}, 置信度: ${response.metadata.confidence}, 原因: ${response.content}`);
+          
+          // 更新上下文，添加路由信息
+          context.additionalContext = {
+            ...context.additionalContext,
+            routingDecision: {
+              originalServiceId: selectedService.id,
+              targetServiceId: targetServiceId,
+              category: response.metadata.intentCategory,
+              confidence: response.metadata.confidence,
+              explanation: response.content
+            }
+          };
+          
+          // 使用目标服务重新处理请求
+          const targetResponse = await targetService.process(context);
+          
+          // 添加路由信息到最终响应
+          if (targetResponse.metadata) {
+            targetResponse.metadata.routedBy = selectedService.id;
+            targetResponse.metadata.originalCategory = response.metadata.intentCategory;
+          } else {
+            targetResponse.metadata = {
+              routedBy: selectedService.id,
+              originalCategory: response.metadata.intentCategory
+            };
+          }
+          
+          return targetResponse;
+        } else {
+          logger.warn(`AI路由决策指定的目标服务 ${targetServiceId} 不存在，使用原服务响应`);
+        }
+      }
+      
       // If the service response requires confirmation, store the context for later
       if (response.requireConfirmation && response.isAwaitingConfirmation) {
         const confirmationKey = `${context.sessionId}_${Date.now()}`;

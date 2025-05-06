@@ -25,6 +25,7 @@ export interface MCPResponse {
   requireConfirmation?: boolean;
   confirmationMessage?: string;
   isAwaitingConfirmation?: boolean;
+  shouldRoute?: boolean;
 }
 
 export interface MCPService {

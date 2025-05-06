@@ -463,7 +463,7 @@ async function processCommandWithAI(command: string, path: string, clientId: str
   // 不是简单命令也不是确认响应，使用MCP系统处理
   try {
     // 使用MCP集成服务处理命令
-    const mcpResponse = await mcpIntegrationService.processCommand(
+    const mcpResponse = await mcpIntegrationService.analyzeIntentAndProcess(
       clientId, // 使用clientId作为sessionId
       command,
       path,

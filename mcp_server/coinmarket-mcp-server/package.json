@@ -1,0 +1,38 @@
+{
+  "name": "coinmarket-mcp-server",
+  "version": "1.0.0",
+  "description": "CoinMarket MCP Server for InfinityOps",
+  "main": "dist/coinmarket-mcp-server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "ts-node --transpile-only coinmarket-mcp-server.ts",
+    "build": "tsc",
+    "dev": "nodemon --exec ts-node --transpile-only coinmarket-mcp-server.ts",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test-coinmarket": "ts-node test-coinmarket-mcp.ts",
+    "test-chinese": "ts-node test-chinese-queries.ts"
+  },
+  "keywords": [
+    "coinmarket",
+    "cryptocurrency",
+    "mcp",
+    "InfinityOps",
+    "api"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.15",
+    "@types/express": "^4.17.20",
+    "@types/node": "^20.8.10",
+    "nodemon": "^3.0.1",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.2.2"
+  }
+} 

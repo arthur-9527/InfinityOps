@@ -33,6 +33,10 @@ COMMAND_BYPASS_MODE=common
 # Comma-separated list of commands that bypass AI analysis (in 'common' mode)
 # Example: Override the default list of commands
 BYPASS_COMMANDS=ls,cd,pwd,clear,history,echo,cat,mkdir,touch,cp,mv,date,whoami,df,du,free,ps,top,uname,hostname,ifconfig,ip
+
+# Weather MCP Service Configuration
+WEATHER_MCP_URL=http://localhost:5001
+WEATHER_MCP_API_KEY=your-api-key-here
 `;
 
 /**
