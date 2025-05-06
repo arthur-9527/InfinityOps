@@ -24,11 +24,21 @@ export const config = {
     level: process.env.LOG_LEVEL || 'debug',
     dir: path.join(__dirname, '../../logs'),
   },
+  redis: {
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    password: process.env.REDIS_PASSWORD || '123578964',
+    db: 0,
+  },
   ai: {
     provider: process.env.AI_PROVIDER || 'ollama',
     ollama: {
-      baseUrl: process.env.OLLAMA_API_URL || 'http://localhost:11434',
-      model: process.env.OLLAMA_DEFAULT_MODEL || 'llama2',
+      apiUrl: process.env.OLLAMA_API_URL || 'http://localhost:11434',
+      defaultModel: process.env.OLLAMA_DEFAULT_MODEL || 'llama2',
+      contextWindow: parseInt(process.env.OLLAMA_CONTEXT_WINDOW || '4096', 10),
+      timeout: parseInt(process.env.OLLAMA_TIMEOUT || '60000', 10), // 60 seconds default
+      maxTokens: parseInt(process.env.OLLAMA_MAX_TOKENS || '2048', 10),
+      temperature: parseFloat(process.env.OLLAMA_TEMPERATURE || '0.7')
     },
   },
 }; 
