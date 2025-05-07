@@ -7,16 +7,27 @@ import { promisify } from 'util';
 import { SSHServiceImpl } from './ssh/sshService';
 import { SSHConnectionConfig } from './ssh/ssh.interface';
 import { logSshRawInput, logSshOutput } from '../middlewares/redisLogger';
-import { redisClient } from '../services/redis.service';
+import { redisClient } from './redis.service';
+import { commandAnalysisService } from './command-analysis/service';
+import { TerminalState } from './command-analysis/interfaces';
 
 const logger = createModuleLogger('websocket');
 const execAsync = promisify(exec);
+
+// 终端状态切换的最小时间间隔（毫秒）
+const TERMINAL_STATE_CHANGE_INTERVAL = 500;
+// 记录上次终端状态变更时间
+const lastTerminalStateChange = new Map<string, number>();
 
 // Client connection map
 const clients = new Map<string, WebSocket>();
 
 // Client SSH session map
-const clientSshSessions = new Map<string, { sessionId: string, connected: boolean }>();
+const clientSshSessions = new Map<string, { 
+  sessionId: string, 
+  connected: boolean,
+  terminalState: 'normal' | 'interactive' | 'config'  // 添加终端状态
+}>();
 
 // SSH service instance
 const sshService = new SSHServiceImpl();
@@ -85,7 +96,8 @@ async function processSshConnectionCommand(command: string, clientId: string): P
     // Store pending connection info (not connected yet)
     clientSshSessions.set(clientId, {
       sessionId: '', // Will be updated after connection
-      connected: false
+      connected: false,
+      terminalState: 'normal'
     });
     
     return {
@@ -131,10 +143,11 @@ async function completeSshConnection(clientId: string, config: SSHConnectionConf
       term: 'xterm-256color'
     });
     
-    // 存储会话信息
+    // 存储会话信息，初始化终端状态为普通状态
     clientSshSessions.set(clientId, {
       sessionId: session.id,
-      connected: true
+      connected: true,
+      terminalState: 'normal'
     });
 
     // 清空该会话的Redis缓存
@@ -152,6 +165,27 @@ async function completeSshConnection(clientId: string, config: SSHConnectionConf
       
       // 记录到Redis
       await logSshOutput(session.id, data);
+      //这里检测是否为 交互模式 以及检测是否收到进包含类似'test@server:~$'的输出
+      // 检测是否为交互模式且接收到提示符
+      const currentSession = clientSshSessions.get(clientId);
+      if (currentSession && currentSession.terminalState === 'interactive') {
+        // 更精确的提示符正则表达式，支持多种格式
+        // 例如: user@host:~$ 或 user@host:/path$ 或 [user@host dir]$ 或 user@host:path# (root)
+        const promptRegex = /^(.*@.*[:~].*[$#]|.*@.*\][$#])\s*$/m;
+        
+        // 记录收到的数据，便于调试
+        const lastLine = data.trim().split('\n').pop() || '';
+        logger.debug(`[TERMINAL OUTPUT LAST LINE] ${clientId}: "${lastLine}"`);
+        
+        if (promptRegex.test(data)) {
+          logger.info(`[PROMPT DETECTED] ${clientId}: Terminal likely returned to prompt state, matched: "${
+            data.match(promptRegex)?.[0].trim() || 'no match'
+          }"`);
+          
+          // 切换回普通模式
+          changeTerminalState(clientId, 'normal');
+        }
+      }
       
       const client = clients.get(clientId);
       if (client && client.readyState === WebSocket.OPEN) {
@@ -244,18 +278,76 @@ async function processSshCommand(command: string, clientId: string): Promise<any
     // 记录SSH输入
     logger.info(`[SSH INPUT] ${clientId}: ${command}`);
     
-    // 直接将命令发送到SSH会话，始终添加换行符
-    session.write(command + '\n');
+    // 使用命令分析服务分析命令
+    const analysisResult = await commandAnalysisService.analyzeCommand({
+      command,
+      currentTerminalState: sessionInfo.terminalState as TerminalState,
+      osInfo: {
+        platform: 'linux' // 可以从系统配置中获取
+      },
+      sessionId: sessionInfo.sessionId
+    });
     
-    // 命令已发送的通知
-    return {
-      type: 'commandSent',
-      timestamp: Date.now(),
-      payload: {
-        command,
-        success: true
+    logger.debug(`[COMMAND ANALYSIS] ${clientId}: ${JSON.stringify(analysisResult)}`);
+    
+    // 根据分析结果决定如何处理命令
+    if (analysisResult.shouldChangeTerminalState) {
+      changeTerminalState(clientId, analysisResult.newTerminalState as 'normal' | 'interactive' | 'config');
+    }
+    
+    // 根据分析结果处理命令
+    if (analysisResult.shouldExecute) {
+      // 使用修改后的命令
+      const cmdToExecute = analysisResult.modifiedCommand || command;
+      
+      // 直接将命令发送到SSH会话，始终添加换行符
+      session.write(cmdToExecute + '\n');
+      
+      // 如果需要反馈，发送到客户端
+      if (analysisResult.feedback.needsFeedback) {
+        const client = clients.get(clientId);
+        if (client && client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({
+            type: 'commandFeedback',
+            timestamp: Date.now(),
+            payload: {
+              command: cmdToExecute,
+              feedback: analysisResult.feedback.message,
+              analysisType: analysisResult.commandType
+            }
+          }));
+        }
       }
-    };
+      
+      // 命令已发送的通知
+      return {
+        type: 'commandSent',
+        timestamp: Date.now(),
+        payload: {
+          command: cmdToExecute,
+          success: true,
+          analysis: {
+            type: analysisResult.commandType,
+            purpose: analysisResult.analysis.commandPurpose
+          }
+        }
+      };
+    } else {
+      // 如果不应执行命令，发送反馈信息
+      return {
+        type: 'terminalResponse',
+        timestamp: Date.now(),
+        payload: {
+          command,
+          output: analysisResult.feedback.message || '命令被分析器拒绝执行',
+          success: false,
+          analysis: {
+            type: analysisResult.commandType,
+            purpose: analysisResult.analysis.commandPurpose
+          }
+        }
+      };
+    }
   } catch (error) {
     logger.error(`Error sending command to SSH: ${error}`);
     return {
@@ -350,14 +442,60 @@ async function processRawInput(command: string, clientId: string): Promise<any> 
     
     logger.info(`[SSH RAW INPUT] ${clientId}: ${printableCommand}`);
     
-    // 记录到Redis
-    await logSshRawInput(sessionInfo.sessionId, command);
-    //如果接收到回车字符 [CTRL:13] 则读取上一条redis中缓存的 session:input，若为"\"则说明输入尚未完成，则不做处理
-    // 若不是，则读取全部redis中尚未处理的session:input 输入 组成一个指令 打印出来。
-    // 若输入为[CTRL:3]，则看redis中是否有尚未处置的session:input，若有则将这些处置。
-    // 最后直接发送原始输入到SSH会话，不做任何处理
+    // 只在普通状态下记录到Redis
+    if (sessionInfo.terminalState === 'normal') {
+      const result = await logSshRawInput(sessionInfo.sessionId, command);
+      if (result) {
+        // 如果result不为空，则说明是完整的命令
+        logger.info(`[FINAL INPUT] ${clientId}: ${result}`);
+        
+        // 在交互模式下，我们不使用AI分析，直接执行
+        if (sessionInfo.terminalState === 'normal') {
+          // 使用命令分析服务分析命令
+          try {
+            const analysisResult = await commandAnalysisService.analyzeCommand({
+              command: result,
+              currentTerminalState: sessionInfo.terminalState as TerminalState,
+              osInfo: {
+                platform: 'linux' // 可以从系统配置中获取
+              },
+              sessionId: sessionInfo.sessionId
+            });
+            
+            logger.debug(`[COMMAND ANALYSIS (RAW)] ${clientId}: ${JSON.stringify(analysisResult)}`);
+            
+            // 如果命令需要切换到交互模式
+            if (analysisResult.shouldChangeTerminalState && analysisResult.newTerminalState === 'interactive') {
+              // 在下一个事件循环中更改终端状态，以确保当前命令已执行
+              setImmediate(() => {
+                changeTerminalState(clientId, 'interactive');
+              });
+            }
+            
+            // 如果需要提供反馈
+            if (analysisResult.feedback.needsFeedback) {
+              const client = clients.get(clientId);
+              if (client && client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify({
+                  type: 'commandFeedback',
+                  timestamp: Date.now(),
+                  payload: {
+                    command: result,
+                    feedback: analysisResult.feedback.message,
+                    analysisType: analysisResult.commandType
+                  }
+                }));
+              }
+            }
+          } catch (error) {
+            logger.error(`Error analyzing raw command: ${error}`);
+          }
+        }
+      }
+    }
+    
+    // 直接发送原始输入到SSH会话
     session.write(command);
-    // 不需要响应，SSH的响应将通过数据事件发送回客户端
     return null;
   } catch (error) {
     logger.error(`Error sending raw input to SSH: ${error}`);
@@ -370,6 +508,54 @@ async function processRawInput(command: string, clientId: string): Promise<any> 
       }
     };
   }
+}
+
+// 添加终端状态变更函数
+function changeTerminalState(clientId: string, newState: 'normal' | 'interactive' | 'config'): void {
+  const sessionInfo = clientSshSessions.get(clientId);
+  if (!sessionInfo) {
+    logger.warn(`Cannot change terminal state: client ${clientId} not found`);
+    return;
+  }
+
+  const oldState = sessionInfo.terminalState;
+  
+  // 如果新状态与旧状态相同，则不做任何操作
+  if (oldState === newState) {
+    return;
+  }
+  
+  // 获取上次状态变更时间
+  const lastChangeTime = lastTerminalStateChange.get(clientId) || 0;
+  const now = Date.now();
+  
+  // 如果距离上次状态变更时间不足阈值，则忽略此次变更（除非是手动强制变更）
+  if (now - lastChangeTime < TERMINAL_STATE_CHANGE_INTERVAL) {
+    logger.debug(`[TERMINAL STATE CHANGE THROTTLED] ${clientId}: Too frequent state change attempt`);
+    return;
+  }
+  
+  // 更新状态
+  sessionInfo.terminalState = newState;
+  
+  // 更新上次变更时间
+  lastTerminalStateChange.set(clientId, now);
+  
+  // 通知前端终端状态变更
+  const client = clients.get(clientId);
+  if (client && client.readyState === WebSocket.OPEN) {
+    client.send(JSON.stringify({
+      type: 'terminalStateChange',
+      timestamp: now,
+      payload: {
+        oldState,
+        newState,
+        sessionId: sessionInfo.sessionId
+      }
+    }));
+  }
+  
+  logger.info(`[TERMINAL STATE CHANGE] ${clientId}: ${oldState} -> ${newState}`);
 }
 
 /**
@@ -569,6 +755,17 @@ export function createWebSocketServer(): WebSocketServer {
                   message: 'SSH connection closed'
                 }
               }));
+            }
+            break;
+            
+          case 'changeTerminalState':
+            if (data.payload && data.payload.state) {
+              const newState = data.payload.state;
+              if (['normal', 'interactive', 'config'].includes(newState)) {
+                changeTerminalState(clientId, newState as 'normal' | 'interactive' | 'config');
+              } else {
+                logger.warn(`Invalid terminal state: ${newState}`);
+              }
             }
             break;
             
