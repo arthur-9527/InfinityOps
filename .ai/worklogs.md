@@ -340,3 +340,22 @@
   - 完成项目结构设计
   - 制定开发计划
   - 下一步：开始项目初始化阶段 
+
+### 2024-05-08
+- ✅ 完善命令解析模块MCP服务信息设计
+  - 完成内容：
+    - 扩展命令解析结果格式，添加mcpInfo字段，包含serviceName、serviceId、params和priority属性
+    - 定义MCP服务类型：fileManager、systemInfo、toolRunner和scriptManager
+    - 设计MCP服务注册机制，支持服务的注册、查找和匹配
+    - 增强MCP命令处理流程，支持基于服务名称和ID的服务选择
+    - 更新AI提示词以支持MCP服务选择和参数提取
+  - 遇到的问题：
+    - 如何在命令分析结果中包含足够的MCP服务信息
+    - 如何确保MCP服务的灵活性和可扩展性
+  - 解决方案：
+    - 设计了标准化的MCPServiceInfo接口，包含服务执行所需的全部信息
+    - 创建MCPServiceRegistry类管理服务注册和查找
+    - 提供了createMCPCommandResult辅助方法简化MCP命令结果创建
+  - 下一步：
+    - 实现基础MCP服务接口和注册机制
+    - 开发首批MCP服务：文件管理和系统信息查询 
