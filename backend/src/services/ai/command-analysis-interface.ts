@@ -14,6 +14,24 @@ export enum CommandType {
   INVALID = 'invalid'
 }
 
+// MCP服务类型
+export type MCPServiceName = 'fileManager' | 'systemInfo' | 'toolRunner' | 'scriptManager' | string;
+
+// MCP服务信息接口
+export interface MCPServiceInfo {
+  // MCP服务名称
+  serviceName: MCPServiceName;
+  
+  // 服务唯一标识符
+  serviceId?: string;
+  
+  // 服务参数
+  params?: Record<string, any>;
+  
+  // 优先级（1-10，数值越小优先级越高）
+  priority?: number;
+}
+
 // 命令分析结果接口
 export interface CommandAnalysisResult {
   // 命令类型
@@ -54,6 +72,9 @@ export interface CommandAnalysisResult {
     // 替代命令列表
     alternatives: string[];
   };
+  
+  // MCP服务信息（仅当commandType为MCP时才有）
+  mcpInfo?: MCPServiceInfo;
 }
 
 // 命令分析请求参数接口
@@ -129,5 +150,27 @@ export function createBasicCommandResult(command: string): CommandAnalysisResult
       potentialIssues: [],
       alternatives: []
     }
+  };
+}
+
+// 默认MCP命令的分析结果
+export function createMCPCommandResult(command: string, mcpInfo: MCPServiceInfo): CommandAnalysisResult {
+  return {
+    commandType: CommandType.MCP,
+    shouldExecute: true,
+    shouldChangeTerminalState: false,
+    newTerminalState: 'normal',
+    modifiedCommand: command,
+    explanation: `通过MCP服务"${mcpInfo.serviceName}"执行命令: ${command}`,
+    feedback: {
+      needsFeedback: false,
+      message: ''
+    },
+    analysis: {
+      commandPurpose: '执行本地MCP操作',
+      potentialIssues: [],
+      alternatives: []
+    },
+    mcpInfo
   };
 } 
