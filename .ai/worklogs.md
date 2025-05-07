@@ -30,6 +30,19 @@
 ## 工作日志
 
 ### 2024-05-08
+- ✅ 创建AI服务基础模块
+  - 完成内容：
+    - 在 backend/src/services/ai 文件夹下创建 aiService.ts，支持基于类OpenAI API的调用方式。
+    - 支持本地Ollama服务，并允许每个调用AI的模块自由配置服务商和模型。
+    - 创建测试文件 aiService.test.ts，用于测试本地Ollama服务调用。
+  - 遇到的问题：
+    - 测试文件中缺少Jest类型定义，导致linter错误。
+  - 解决方案：
+    - 安装 @types/jest 以解决测试文件中的linter错误。
+  - 下一步：
+    - 实现更多AI调用模块，丰富AI功能。
+
+### 2024-05-08
 - ✅ 统一redisLogger日志风格
   - 完成内容：
     - 将 backend/src/middlewares/redisLogger.ts 中所有日志输出由 console.log/console.error 统一为 logger.info/logger.error。
