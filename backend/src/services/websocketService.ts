@@ -6,6 +6,8 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { SSHServiceImpl } from './ssh/sshService';
 import { SSHConnectionConfig } from './ssh/ssh.interface';
+import { logSshRawInput, logSshOutput } from '../middlewares/redisLogger';
+import { redisClient } from '../services/redis.service';
 
 const logger = createModuleLogger('websocket');
 const execAsync = promisify(exec);
@@ -134,11 +136,22 @@ async function completeSshConnection(clientId: string, config: SSHConnectionConf
       sessionId: session.id,
       connected: true
     });
+
+    // 清空该会话的Redis缓存
+    try {
+      await redisClient.del(`session:input:${session.id}`);
+      logger.info(`[Redis Logger] Cleared input cache for new session ${session.id}`);
+    } catch (err) {
+      logger.error(`[Redis Logger] Error clearing input cache for session ${session.id}:`, err);
+    }
     
     // 设置数据事件转发
-    session.on('data', (data: string) => {
+    session.on('data', async (data: string) => {
       // 记录SSH输出
       logger.info(`[SSH OUTPUT] ${clientId}: ${data.replace(/\r\n/g, '\\r\\n').replace(/\n/g, '\\n')}`);
+      
+      // 记录到Redis
+      await logSshOutput(session.id, data);
       
       const client = clients.get(clientId);
       if (client && client.readyState === WebSocket.OPEN) {
@@ -337,7 +350,12 @@ async function processRawInput(command: string, clientId: string): Promise<any> 
     
     logger.info(`[SSH RAW INPUT] ${clientId}: ${printableCommand}`);
     
-    // 直接发送原始输入到SSH会话，不做任何处理
+    // 记录到Redis
+    await logSshRawInput(sessionInfo.sessionId, command);
+    //如果接收到回车字符 [CTRL:13] 则读取上一条redis中缓存的 session:input，若为"\"则说明输入尚未完成，则不做处理
+    // 若不是，则读取全部redis中尚未处理的session:input 输入 组成一个指令 打印出来。
+    // 若输入为[CTRL:3]，则看redis中是否有尚未处置的session:input，若有则将这些处置。
+    // 最后直接发送原始输入到SSH会话，不做任何处理
     session.write(command);
     // 不需要响应，SSH的响应将通过数据事件发送回客户端
     return null;
