@@ -12,7 +12,7 @@ export class AIFactory {
    */
   static createOllamaService(model?: string): AIService {
     const ollamaModel = model || process.env.OLLAMA_DEFAULT_MODEL || 'gemma3:latest';
-    const ollamaUrl = process.env.OLLAMA_API_URL || 'http://localhost:11434/api';
+    const ollamaUrl = process.env.OLLAMA_API_URL || 'http://localhost:11434';
     
     logger.info(`Creating Ollama service with model: ${ollamaModel}`);
     
