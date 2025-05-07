@@ -180,7 +180,8 @@ export class RedisService {
       if (!this.isConnected) {
         await this.connect();
       }
-      return await this.client.hGet(key, field);
+      const result = await this.client.hGet(key, field);
+      return result ?? null;
     } catch (error) {
       logger.error(`Redis HGET error: ${(error as Error).message}`);
       return null;
