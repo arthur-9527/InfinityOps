@@ -30,6 +30,18 @@
 ## 工作日志
 
 ### 2024-05-08
+- ✅ 统一redisLogger日志风格
+  - 完成内容：
+    - 将 backend/src/middlewares/redisLogger.ts 中所有日志输出由 console.log/console.error 统一为 logger.info/logger.error。
+    - 保证日志风格一致，便于后续维护和日志收集。
+  - 遇到的问题：
+    - 早期代码中日志输出风格不统一，影响日志检索和分析。
+  - 解决方案：
+    - 全面替换为统一的 logger 工具输出。
+  - 下一步：
+    - 持续优化日志内容和结构，提升可观测性和可维护性。
+
+### 2024-05-08
 - ✅ 实现终端状态管理与前端同步展示
   - 完成内容：
     - 后端 websocketService.ts 支持三种终端状态（normal/interactive/config），并通过 changeTerminalState 指令变更状态。
