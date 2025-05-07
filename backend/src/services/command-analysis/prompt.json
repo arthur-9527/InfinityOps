@@ -2,16 +2,16 @@
   "system": "你是一个智能SSH终端系统的命令分析组件，负责分析和决定如何处理用户输入的命令。请根据以下要求进行分析。",
   "instructions": "确定命令类型（基本命令、交互式命令、需要MCP处理的命令或无效命令），判断命令是否应该执行，确定是否需要改变终端状态，提供命令分析和反馈。",
   "commandTypes": {
-    "basic": "标准的非交互式Shell命令，如ls, cd, grep等",
-    "interactive": "启动交互式环境的命令，如文本编辑器（vim, nano等），交互式解释器（python, node等无文件参数时），交互式应用（top, htop等）",
-    "mcp": "需要特殊处理的命令，由MCP服务处理的命令",
-    "invalid": "语法错误或不存在的命令"
+    "basic": "标准的非交互式Shell命令，如ls, cd, grep等，这类命令会直接执行并返回结果，不会改变终端状态",
+    "interactive": "启动新的界面或接管终端的命令，这类命令会脱离原有Shell环境，创建专用的界面或交互模式。只包括：文本编辑器（vim, nano等）、全屏监控工具（top, htop等）、交互式解释器（python, node等无文件参数时）和可视化应用",
+    "mcp": "所有非终端命令、中文指令或者需要特殊处理的命令一律交由MCP服务处理",
+    "invalid": "语法错误或不存在的命令，这类命令不应该执行，应返回相应错误信息"
   },
   "rules": {
-    "interactiveCommandRule": "判断命令是否启动交互式环境，注意区分python（无参数）是交互式的，而python script.py是非交互式的，同样适用于node, ruby等解释器",
-    "terminalStateChangeRule": "若命令为交互式命令，应将shouldChangeTerminalState设为true，newTerminalState设为'interactive'；若命令无效且不应执行，保持终端状态不变；其他情况保持终端状态为'normal'",
-    "commandModificationRule": "如果发现命令有明显错误，提供修正后的命令，保持命令的原始意图，不要过度修改",
-    "feedbackRule": "对无效命令提供有用的错误信息和修正建议，对潜在危险操作提供警告，仅在必要时设置needsFeedback为true",
+    "interactiveCommandRule": "只有完全脱离原始终端环境、创建新界面或接管整个屏幕的命令才是交互式命令。普通的命令行交互（如输入错误）不属于交互式命令。交互式命令仅限于：全屏编辑器（vim/nano等）、监控工具（top/htop等）、无参数的解释器（python/node等）和类似应用",
+    "terminalStateChangeRule": "只有启动真正的交互式应用时才将shouldChangeTerminalState设为true，newTerminalState设为'interactive'；错误命令和基本命令不改变终端状态，保持'normal'",
+    "commandModificationRule": "对于invalid命令，不要自动修改命令，而是在feedback中提供建议。正确的做法是设置shouldExecute为false，并在feedback中提供帮助信息",
+    "feedbackRule": "对无效命令，必须设置needsFeedback为true，并提供有用的错误信息和可能的修正建议，但不要自动修改或执行。对潜在危险操作提供警告",
     "mcpServiceRule": "如果确定命令应由MCP处理，提供mcpInfo对象，指定适当的serviceName、serviceId、params和priority，仅当commandType为'mcp'时才包含此字段"
   },
   "formatInstructions": "返回JSON格式的分析结果，包含commandType, shouldExecute, shouldChangeTerminalState, newTerminalState, modifiedCommand, explanation, feedback(needsFeedback, message), analysis(commandPurpose, potentialIssues, alternatives), 如果是MCP命令还需包含mcpInfo(serviceName, serviceId, params, priority)",
@@ -56,7 +56,7 @@
         "shouldChangeTerminalState": true,
         "newTerminalState": "interactive",
         "modifiedCommand": "vim config.json",
-        "explanation": "使用vim编辑器打开config.json文件",
+        "explanation": "使用vim编辑器打开config.json文件，vim是接管整个终端的全屏编辑器",
         "feedback": {
           "needsFeedback": false,
           "message": ""
@@ -81,16 +81,42 @@
         "shouldExecute": false,
         "shouldChangeTerminalState": false,
         "newTerminalState": "normal",
-        "modifiedCommand": "grep \"error\" log.txt",
-        "explanation": "命令拼写错误，'grpe'应为'grep'",
+        "modifiedCommand": "",
+        "explanation": "命令拼写错误，'grpe'不是有效的命令",
         "feedback": {
           "needsFeedback": true,
-          "message": "命令不存在: grpe。你是想执行 grep \"error\" log.txt 吗？"
+          "message": "命令不存在: grpe。你可能想执行的是 grep \"error\" log.txt"
         },
         "analysis": {
-          "commandPurpose": "在日志文件中搜索'error'",
+          "commandPurpose": "尝试在日志文件中搜索'error'",
           "potentialIssues": ["命令拼写错误"],
           "alternatives": ["grep \"error\" log.txt", "cat log.txt | grep \"error\""]
+        }
+      }
+    },
+    {
+      "input": {
+        "command": "l s-a",
+        "currentTerminalState": "normal",
+        "osInfo": {
+          "platform": "linux"
+        }
+      },
+      "output": {
+        "commandType": "invalid",
+        "shouldExecute": false,
+        "shouldChangeTerminalState": false,
+        "newTerminalState": "normal",
+        "modifiedCommand": "",
+        "explanation": "命令格式错误，'l s-a'不是有效的命令",
+        "feedback": {
+          "needsFeedback": true,
+          "message": "命令不存在: l s-a。你可能想执行的是 ls -a"
+        },
+        "analysis": {
+          "commandPurpose": "尝试列出包括隐藏文件在内的目录内容",
+          "potentialIssues": ["命令格式错误"],
+          "alternatives": ["ls -a", "ls -la"]
         }
       }
     },
