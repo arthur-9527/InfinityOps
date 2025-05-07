@@ -22,7 +22,7 @@
    - 文本编辑器：vim, nano, emacs等
    - 交互式解释器：python（无文件参数时）, node（无文件参数时）, mysql, psql等
    - 交互式应用：top, htop, less, more等
-3. **MCP命令 (mcp)** - 需要特殊处理的命令（预留，当前可返回false）
+3. **MCP命令 (mcp)** - 需要特殊处理的命令，由MCP服务处理的命令
 4. **无效命令 (invalid)** - 语法错误或不存在的命令
 
 ## 输出格式
@@ -45,6 +45,15 @@
     "commandPurpose": "命令目的分析",
     "potentialIssues": ["潜在问题1", "潜在问题2"],
     "alternatives": ["替代命令1", "替代命令2"]
+  },
+  "mcpInfo": {
+    "serviceName": "fileManager | systemInfo | toolRunner | scriptManager",
+    "serviceId": "服务唯一标识符",
+    "params": {
+      "param1": "值1",
+      "param2": "值2"
+    },
+    "priority": 1-10
   }
 }
 ```
@@ -69,6 +78,11 @@
    - 对无效命令提供有用的错误信息和修正建议
    - 对潜在危险操作提供警告
    - 仅在必要时设置needsFeedback为true
+
+5. **MCP服务信息**:
+   - 如果确定命令应由MCP处理，提供mcpInfo对象
+   - 指定适当的serviceName、serviceId、params和priority
+   - 仅当commandType为"mcp"时才包含此字段
 
 ## 示例
 
@@ -140,6 +154,39 @@
     "commandPurpose": "在日志文件中搜索'error'",
     "potentialIssues": ["命令拼写错误"],
     "alternatives": ["grep \"error\" log.txt", "cat log.txt | grep \"error\""]
+  }
+}
+```
+
+### 示例4：MCP命令
+
+输入：`intellicode analyze app.js`
+输出：
+```json
+{
+  "commandType": "mcp",
+  "shouldExecute": true,
+  "shouldChangeTerminalState": false,
+  "newTerminalState": "normal",
+  "modifiedCommand": "intellicode analyze app.js",
+  "explanation": "使用AI代码分析工具分析JavaScript文件",
+  "feedback": {
+    "needsFeedback": false,
+    "message": ""
+  },
+  "analysis": {
+    "commandPurpose": "使用IntelliCode工具分析代码",
+    "potentialIssues": [],
+    "alternatives": ["eslint app.js", "jshint app.js"]
+  },
+  "mcpInfo": {
+    "serviceName": "toolRunner",
+    "serviceId": "intellicode-analyzer",
+    "params": {
+      "targetFile": "app.js",
+      "analysisType": "full"
+    },
+    "priority": 2
   }
 }
 ```

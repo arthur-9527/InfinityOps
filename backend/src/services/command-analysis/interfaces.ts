@@ -111,66 +111,53 @@ export interface ICommandAnalysisService {
    * @returns 如果命令在bypass列表中返回true，否则返回false
    */
   isCommandInBypassList(command: string): boolean;
+  
+  /**
+   * 加载配置
+   * 从.env文件读取配置项
+   */
+  loadConfig(): void;
 }
 
-// 默认AI分析命令的结果（命令无效时使用）
-export const DEFAULT_INVALID_COMMAND_RESULT: CommandAnalysisResult = {
-  commandType: CommandType.INVALID,
-  shouldExecute: false,
-  shouldChangeTerminalState: false,
-  newTerminalState: 'normal',
-  modifiedCommand: '',
-  explanation: '无法解析命令',
-  feedback: {
-    needsFeedback: true,
-    message: '命令解析失败，请重试或检查命令是否正确。'
-  },
-  analysis: {
-    commandPurpose: '未知',
-    potentialIssues: ['命令解析失败'],
-    alternatives: []
-  }
-};
-
-// 默认基本命令的分析结果（无需AI分析的命令使用）
-export function createBasicCommandResult(command: string): CommandAnalysisResult {
-  return {
-    commandType: CommandType.BASIC,
-    shouldExecute: true,
-    shouldChangeTerminalState: false,
-    newTerminalState: 'normal',
-    modifiedCommand: command,
-    explanation: `执行命令: ${command}`,
-    feedback: {
-      needsFeedback: false,
-      message: ''
-    },
-    analysis: {
-      commandPurpose: '执行Shell命令',
-      potentialIssues: [],
-      alternatives: []
-    }
-  };
+// 命令跳过模式枚举
+export enum CommandBypassMode {
+  NONE = 'none',     // 所有命令都经过AI分析
+  COMMON = 'common', // 常用命令跳过AI分析
+  ALL = 'all'        // 所有命令都跳过AI分析
 }
 
-// 默认MCP命令的分析结果
-export function createMCPCommandResult(command: string, mcpInfo: MCPServiceInfo): CommandAnalysisResult {
-  return {
-    commandType: CommandType.MCP,
-    shouldExecute: true,
-    shouldChangeTerminalState: false,
-    newTerminalState: 'normal',
-    modifiedCommand: command,
-    explanation: `通过MCP服务"${mcpInfo.serviceName}"执行命令: ${command}`,
-    feedback: {
-      needsFeedback: false,
-      message: ''
-    },
-    analysis: {
-      commandPurpose: '执行本地MCP操作',
-      potentialIssues: [],
-      alternatives: []
-    },
-    mcpInfo
-  };
+// 配置接口
+export interface CommandAnalysisConfig {
+  // 命令跳过模式
+  bypassMode: CommandBypassMode;
+  
+  // 跳过分析的命令列表
+  bypassCommands: string[];
+  
+  // AI提供商
+  aiProvider: string;
+  
+  // AI模型
+  aiModel: string;
+}
+
+// 命令提示接口
+export interface CommandPrompt {
+  system: string;
+  instructions: string;
+  commandTypes: Record<string, string>;
+  rules: Record<string, string>;
+  formatInstructions: string;
+  examples: Array<{
+    input: {
+      command: string;
+      currentTerminalState: string;
+      osInfo: {
+        platform: string;
+        distribution?: string;
+        version?: string;
+      };
+    };
+    output: CommandAnalysisResult;
+  }>;
 } 
