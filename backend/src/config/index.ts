@@ -33,7 +33,7 @@ export const config = {
   ai: {
     provider: process.env.AI_PROVIDER || 'ollama',
     ollama: {
-      apiUrl: process.env.OLLAMA_API_URL || 'http://localhost:11434',
+      apiUrl: process.env.OLLAMA_API_URL || 'http://localhost:11434/v1',
       defaultModel: process.env.OLLAMA_DEFAULT_MODEL || 'llama2',
       contextWindow: parseInt(process.env.OLLAMA_CONTEXT_WINDOW || '4096', 10),
       timeout: parseInt(process.env.OLLAMA_TIMEOUT || '60000', 10), // 60 seconds default

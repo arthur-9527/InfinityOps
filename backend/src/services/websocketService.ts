@@ -8,8 +8,6 @@ import { SSHServiceImpl } from './ssh/sshService';
 import { SSHConnectionConfig } from './ssh/ssh.interface';
 import { logSshRawInput, logSshOutput } from '../middlewares/redisLogger';
 import { redisClient } from './redisService';
-import { commandAnalysisService } from './command-analysis/service';
-import { TerminalState } from './command-analysis/interfaces';
 
 const logger = createModuleLogger('websocket');
 const execAsync = promisify(exec);
@@ -278,76 +276,23 @@ async function processSshCommand(command: string, clientId: string): Promise<any
     // 记录SSH输入
     logger.info(`[SSH INPUT] ${clientId}: ${command}`);
     
-    // 使用命令分析服务分析命令
-    const analysisResult = await commandAnalysisService.analyzeCommand({
-      command,
-      currentTerminalState: sessionInfo.terminalState as TerminalState,
-      osInfo: {
-        platform: 'linux' // 可以从系统配置中获取
-      },
-      sessionId: sessionInfo.sessionId
-    });
-    
-    logger.debug(`[COMMAND ANALYSIS] ${clientId}: ${JSON.stringify(analysisResult)}`);
-    
-    // 根据分析结果决定如何处理命令
-    if (analysisResult.shouldChangeTerminalState) {
-      changeTerminalState(clientId, analysisResult.newTerminalState as 'normal' | 'interactive' | 'config');
+    // 检查是否是交互式命令
+    if (isInteractiveCommand(command)) {
+      changeTerminalState(clientId, 'interactive');
     }
     
-    // 根据分析结果处理命令
-    if (analysisResult.shouldExecute) {
-      // 使用修改后的命令
-      const cmdToExecute = analysisResult.modifiedCommand || command;
-      
-      // 直接将命令发送到SSH会话，始终添加换行符
-      session.write(cmdToExecute + '\n');
-      
-      // 如果需要反馈，发送到客户端
-      if (analysisResult.feedback.needsFeedback) {
-        const client = clients.get(clientId);
-        if (client && client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify({
-            type: 'commandFeedback',
-            timestamp: Date.now(),
-            payload: {
-              command: cmdToExecute,
-              feedback: analysisResult.feedback.message,
-              analysisType: analysisResult.commandType
-            }
-          }));
-        }
+    // 直接将命令发送到SSH会话，始终添加换行符
+    session.write(command + '\n');
+    
+    // 命令已发送的通知
+    return {
+      type: 'commandSent',
+      timestamp: Date.now(),
+      payload: {
+        command,
+        success: true
       }
-      
-      // 命令已发送的通知
-      return {
-        type: 'commandSent',
-        timestamp: Date.now(),
-        payload: {
-          command: cmdToExecute,
-          success: true,
-          analysis: {
-            type: analysisResult.commandType,
-            purpose: analysisResult.analysis.commandPurpose
-          }
-        }
-      };
-    } else {
-      // 如果不应执行命令，发送反馈信息
-      return {
-        type: 'terminalResponse',
-        timestamp: Date.now(),
-        payload: {
-          command,
-          output: analysisResult.feedback.message || '命令被分析器拒绝执行',
-          success: false,
-          analysis: {
-            type: analysisResult.commandType,
-            purpose: analysisResult.analysis.commandPurpose
-          }
-        }
-      };
-    }
+    };
   } catch (error) {
     logger.error(`Error sending command to SSH: ${error}`);
     return {
@@ -449,47 +394,9 @@ async function processRawInput(command: string, clientId: string): Promise<any> 
         // 如果result不为空，则说明是完整的命令
         logger.info(`[FINAL INPUT] ${clientId}: ${result}`);
         
-        // 在交互模式下，我们不使用AI分析，直接执行
-        if (sessionInfo.terminalState === 'normal') {
-          // 使用命令分析服务分析命令
-          try {
-            const analysisResult = await commandAnalysisService.analyzeCommand({
-              command: result,
-              currentTerminalState: sessionInfo.terminalState as TerminalState,
-              osInfo: {
-                platform: 'linux' // 可以从系统配置中获取
-              },
-              sessionId: sessionInfo.sessionId
-            });
-            
-            logger.debug(`[COMMAND ANALYSIS (RAW)] ${clientId}: ${JSON.stringify(analysisResult)}`);
-            
-            // 如果命令需要切换到交互模式
-            if (analysisResult.shouldChangeTerminalState && analysisResult.newTerminalState === 'interactive') {
-              // 在下一个事件循环中更改终端状态，以确保当前命令已执行
-              setImmediate(() => {
-                changeTerminalState(clientId, 'interactive');
-              });
-            }
-            
-            // 如果需要提供反馈
-            if (analysisResult.feedback.needsFeedback) {
-              const client = clients.get(clientId);
-              if (client && client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({
-                  type: 'commandFeedback',
-                  timestamp: Date.now(),
-                  payload: {
-                    command: result,
-                    feedback: analysisResult.feedback.message,
-                    analysisType: analysisResult.commandType
-                  }
-                }));
-              }
-            }
-          } catch (error) {
-            logger.error(`Error analyzing raw command: ${error}`);
-          }
+        // 检查是否是交互式命令
+        if (isInteractiveCommand(result)) {
+          changeTerminalState(clientId, 'interactive');
         }
       }
     }
