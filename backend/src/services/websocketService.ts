@@ -7,7 +7,7 @@ import { promisify } from 'util';
 import { SSHServiceImpl } from './ssh/sshService';
 import { SSHConnectionConfig } from './ssh/ssh.interface';
 import { logSshRawInput, logSshOutput } from '../middlewares/redisLogger';
-import { redisClient } from './redis.service';
+import { redisClient } from './redisService';
 import { commandAnalysisService } from './command-analysis/service';
 import { TerminalState } from './command-analysis/interfaces';
 

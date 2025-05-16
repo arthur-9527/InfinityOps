@@ -251,6 +251,36 @@ export class RedisService {
       return [];
     }
   }
+
+  /**
+   * List operations - LLEN
+   */
+  async lLen(key: string): Promise<number> {
+    try {
+      if (!this.isConnected) {
+        await this.connect();
+      }
+      return await this.client.lLen(key);
+    } catch (error) {
+      logger.error(`Redis LLEN error: ${(error as Error).message}`);
+      return 0;
+    }
+  }
+
+  /**
+   * List operations - LINDEX
+   */
+  async lIndex(key: string, index: number): Promise<string | null> {
+    try {
+      if (!this.isConnected) {
+        await this.connect();
+      }
+      return await this.client.lIndex(key, index);
+    } catch (error) {
+      logger.error(`Redis LINDEX error: ${(error as Error).message}`);
+      return null;
+    }
+  }
 }
 
 // Singleton instance
@@ -273,4 +303,7 @@ export async function createRedisService(): Promise<RedisService> {
   const service = getRedisService();
   await service.connect();
   return service;
-} 
+}
+
+// Export a singleton instance of RedisService as redisClient
+export const redisClient = getRedisService(); 

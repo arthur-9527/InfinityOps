@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { redisClient } from '../services/redis.service';
+import { redisClient } from '../services/redisService';
 import { v4 as uuidv4 } from 'uuid';
 
 interface RedisLoggerRequest extends Request {
@@ -62,7 +62,7 @@ export const logWebSocketMessage = async (sessionId: string, type: 'input' | 'ou
 };
 
 // 处理SSH原始输入
-export const logSshRawInput = async (sessionId: string, data: string) => {
+export const logSshRawInput = async (sessionId: string, data: string): Promise<string | null> => {
   try {
     const charCode = data.charCodeAt(0);
     const key = `session:input:${sessionId}`;
@@ -71,7 +71,7 @@ export const logSshRawInput = async (sessionId: string, data: string) => {
     if (charCode === 9) {
       console.log(`[Redis Logger] Received Tab for session ${sessionId}, setting tab flag`);
       await redisClient.set(`session:tab:${sessionId}`, '1');
-      return;
+      return null;
     }
     
     // 处理Ctrl+C (ASCII 3)
@@ -79,7 +79,7 @@ export const logSshRawInput = async (sessionId: string, data: string) => {
       console.log(`[Redis Logger] Received Ctrl+C for session ${sessionId}, clearing input cache`);
       await redisClient.del(key);
       await redisClient.del(`session:tab:${sessionId}`);
-      return;
+      return null;
     }
     
     // 处理退格键 (ASCII 127)
@@ -114,7 +114,7 @@ export const logSshRawInput = async (sessionId: string, data: string) => {
           console.error(`[Redis Logger] Error processing backspace for session ${sessionId}:`, err);
         }
       }
-      return;
+      return null;
     }
     
     // 处理回车键 (ASCII 13)
@@ -126,7 +126,7 @@ export const logSshRawInput = async (sessionId: string, data: string) => {
           // 检查最后一个字符是否为反斜杠
           if (lastInputData.data.data.endsWith('\\')) {
             console.log(`[Redis Logger] Command continuation detected for session ${sessionId}`);
-            return; // 命令未完成，不做处理
+            return null; // 命令未完成，不做处理
           }
           
           // 命令完成，获取所有输入并组合
@@ -141,16 +141,17 @@ export const logSshRawInput = async (sessionId: string, data: string) => {
             timestamp: Date.now(),
             command: command
           }));
-          console.log(`[Redis Logger] Command completed for session ${sessionId}: ${command}`);
-          
+
           // 清空输入缓存和tab标志
           await redisClient.del(key);
           await redisClient.del(`session:tab:${sessionId}`);
+          console.log(`[Redis Logger] Command completed for session ${sessionId}: ${command}`);
+          return command;
         } catch (err) {
           console.error(`[Redis Logger] Error processing command for session ${sessionId}:`, err);
         }
       }
-      return;
+      return null;
     }
     
     // 只记录非特殊字符的输入
@@ -160,8 +161,10 @@ export const logSshRawInput = async (sessionId: string, data: string) => {
         data: data
       });
     }
+    return null;
   } catch (err) {
     console.error(`[Redis Logger] Error processing raw input for session ${sessionId}:`, err);
+    return null;
   }
 };
 
@@ -255,7 +258,9 @@ export const redisLogger = async (req: RedisLoggerRequest, res: Response, next: 
     const command = req.body.command;
     // 只记录非特殊按键的命令（排除Ctrl+C等特殊按键）
     if (command.length > 1 || (command.charCodeAt(0) >= 32 && command.charCodeAt(0) <= 126)) {
-      logSshRawInput(req.sessionId, command);
+      if (req.sessionId) {
+        logSshRawInput(req.sessionId, command);
+      }
     }
   }
 
