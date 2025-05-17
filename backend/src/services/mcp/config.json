@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "calculator": {
+      "command": "node",
+      "args": ["/home/test/InfinityOps/mcp_servers/calculator-mcp/build/index.js"]
+    },
+    "weather": {
+      "command": "node",
+      "args": ["/home/test/InfinityOps/mcp_servers/weather-mcp/build/index.js"]
+    }
+  }
+} 

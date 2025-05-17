@@ -8,6 +8,7 @@ import { SSHServiceImpl } from './ssh/sshService';
 import { SSHConnectionConfig } from './ssh/ssh.interface';
 import { logSshRawInput, logSshOutput } from '../middlewares/redisLogger';
 import { redisClient } from './redisService';
+import { IntentService } from './intent';
 
 const logger = createModuleLogger('websocket');
 const execAsync = promisify(exec);
@@ -33,8 +34,14 @@ const sshService = new SSHServiceImpl();
 // 交互式命令列表
 const INTERACTIVE_COMMANDS = [
   'nano', 'vim', 'vi', 'less', 'more', 'top', 'htop', 'pico', 
-  'emacs', 'joe', 'jed', 'mc', 'watch', 'tail -f', 'man'
+  'emacs', 'joe', 'jed', 'mc', 'watch', 'tail -f', 'man', 'node','python','python3'
 ];
+
+// 创建意图分析服务实例
+const intentService = new IntentService();
+
+// 获取需要跳过的命令列表
+const skipCommands = (process.env.SKIP_COMMANDS || '').split(',').map(cmd => cmd.trim());
 
 // 检查命令是否是交互式命令
 function isInteractiveCommand(cmd: string): boolean {
@@ -48,6 +55,11 @@ function isInteractiveCommand(cmd: string): boolean {
     (ic === 'less' && /^less\s+\S+/.test(trimmedCmd)) ||
     (ic === 'more' && /^more\s+\S+/.test(trimmedCmd))
   );
+}
+
+// 检查是否是需要跳过的命令
+function isSkipCommand(command: string): boolean {
+  return skipCommands.some(cmd => command.startsWith(cmd));
 }
 
 /**
@@ -393,10 +405,20 @@ async function processRawInput(command: string, clientId: string): Promise<any> 
       if (result) {
         // 如果result不为空，则说明是完整的命令
         logger.info(`[FINAL INPUT] ${clientId}: ${result}`);
-        
         // 检查是否是交互式命令
-        if (isInteractiveCommand(result)) {
+        if(isSkipCommand(result)){
+          logger.info(`[SKIP COMMAND] ${clientId}: ${result}`);
+        }
+        else if (isInteractiveCommand(result)) {
           changeTerminalState(clientId, 'interactive');
+        }else{
+          // 进行意图分析
+          try{
+            const intentResult = await intentService.analyzeIntent(result);
+            logger.info(JSON.stringify(intentResult));
+          } catch (error) {
+            logger.error(`Error analyzing intent for command "${result}":`, error);
+          }
         }
       }
     }

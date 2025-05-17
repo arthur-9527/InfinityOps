@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "calculator-mcp": {
-      "command": "/home/test/mcp_server_proxy/calculator-mcp/build/index.js"
+      "command": "/home/test/InfinityOps/mcp_servers/calculator-mcp/build/index.js"
     },
     "weather-mcp": {
-      "command": "/home/test/mcp_server_proxy/weather-mcp/build/index.js"
+      "command": "/home/test/InfinityOps/mcp_servers/weather-mcp/build/index.js"
     }
   }
 } 
