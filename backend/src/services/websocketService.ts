@@ -6,18 +6,19 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { SSHServiceImpl } from './ssh/sshService';
 import { SSHConnectionConfig } from './ssh/ssh.interface';
-import { logSshRawInput, logSshOutput } from '../middlewares/redisLogger';
+import { logSshRawInput, logSshOutput, logAiOutput, getAiOutput, clearAiOutput } from '../middlewares/redisLogger';
 import { redisClient } from './redisService';
 import { IntentService } from './intent';
+import { ResultService } from './resultService';
 
+const context:string[] = [];
 const logger = createModuleLogger('websocket');
 const execAsync = promisify(exec);
-
 // 终端状态切换的最小时间间隔（毫秒）
 const TERMINAL_STATE_CHANGE_INTERVAL = 500;
 // 记录上次终端状态变更时间
 const lastTerminalStateChange = new Map<string, number>();
-
+let aiStatus: 'idle' | 'analyzing'|'waiting' = 'idle';
 // Client connection map
 const clients = new Map<string, WebSocket>();
 
@@ -39,6 +40,9 @@ const INTERACTIVE_COMMANDS = [
 
 // 创建意图分析服务实例
 const intentService = new IntentService();
+
+// 创建结果分析服务实例
+const resultService = ResultService.getInstance();
 
 // 获取需要跳过的命令列表
 const skipCommands = (process.env.SKIP_COMMANDS || '').split(',').map(cmd => cmd.trim());
@@ -167,26 +171,62 @@ async function completeSshConnection(clientId: string, config: SSHConnectionConf
     } catch (err) {
       logger.error(`[Redis Logger] Error clearing input cache for session ${session.id}:`, err);
     }
+    // 清空context
+    context.length = 0;
     
     // 设置数据事件转发
     session.on('data', async (data: string) => {
+      // 更精确的提示符正则表达式，支持多种格式
+      // 例如: user@host:~$ 或 user@host:/path$ 或 [user@host dir]$ 或 user@host:path# (root)
+      const promptRegex = /^(.*@.*[:~].*[$#]|.*@.*\][$#])\s*$/m;
       // 记录SSH输出
       logger.info(`[SSH OUTPUT] ${clientId}: ${data.replace(/\r\n/g, '\\r\\n').replace(/\n/g, '\\n')}`);
-      
       // 记录到Redis
       await logSshOutput(session.id, data);
-      //这里检测是否为 交互模式 以及检测是否收到进包含类似'test@server:~$'的输出
+      if(aiStatus === 'waiting' && data !== '\n'){
+        //说明已经有AI 输出。
+        const aiOutput = await getAiOutput(session.id);
+        if(promptRegex.test(data)){
+          // 说明已经返回了提示符,说明SSH输出完毕，开始处理
+          logger.info(`[CONTEXT]:${context.length}`)
+          const endData = data;
+          logger.info(`[END DATA] ${endData.replace(/\r\n/g, '\\r\\n').replace(/\n/g, '\\n')}`);
+          clearAiOutput(session.id);
+          const analysisResult = await resultService.analyzeResult( context.join('\n'), JSON.stringify(aiOutput));
+          logger.info(`[ANALYSIS RESULT] ${clientId}: ${JSON.stringify(analysisResult)}`);      
+          aiStatus = 'idle';
+          let sendData = '';
+          if(analysisResult.data !== 'null'){
+            sendData = '\n' + analysisResult.data+'\n'+analysisResult.details +'\n'+endData;
+          }else{
+            sendData = '\n' + analysisResult.details +'\n'+endData;
+          }
+
+          const client = clients.get(clientId);
+          if (client && client.readyState === WebSocket.OPEN) {
+            // 直接将SSH输出传递给客户端，不做任何处理
+            client.send(JSON.stringify({
+              type: 'sshData',
+              timestamp: Date.now(),
+              payload: {
+                data: sendData
+              }
+            }));
+          }
+          return;
+        }else{
+          logger.info(`[CONTEXT] ${clientId}: ${data.replace(/\r\n/g, '\\r\\n').replace(/\n/g, '\\n')}`);
+          context.push(data);
+          return;
+        }
+      }
+      
       // 检测是否为交互模式且接收到提示符
       const currentSession = clientSshSessions.get(clientId);
       if (currentSession && currentSession.terminalState === 'interactive') {
-        // 更精确的提示符正则表达式，支持多种格式
-        // 例如: user@host:~$ 或 user@host:/path$ 或 [user@host dir]$ 或 user@host:path# (root)
-        const promptRegex = /^(.*@.*[:~].*[$#]|.*@.*\][$#])\s*$/m;
-        
         // 记录收到的数据，便于调试
         const lastLine = data.trim().split('\n').pop() || '';
         logger.debug(`[TERMINAL OUTPUT LAST LINE] ${clientId}: "${lastLine}"`);
-        
         if (promptRegex.test(data)) {
           logger.info(`[PROMPT DETECTED] ${clientId}: Terminal likely returned to prompt state, matched: "${
             data.match(promptRegex)?.[0].trim() || 'no match'
@@ -415,7 +455,13 @@ async function processRawInput(command: string, clientId: string): Promise<any> 
           // 进行意图分析
           try{
             const intentResult = await intentService.analyzeIntent(result);
-            logger.info(JSON.stringify(intentResult));
+            if(intentResult.success){
+              logger.info(`[INTENT RESULT] ${clientId}: ${JSON.stringify(intentResult.result)}`);
+              await logAiOutput(sessionInfo.sessionId, JSON.stringify(intentResult.result));
+              // 设置AI状态为等待，证明AI OUTPUT 有数据需要处理
+              aiStatus = 'waiting';
+            }
+
           } catch (error) {
             logger.error(`Error analyzing intent for command "${result}":`, error);
           }

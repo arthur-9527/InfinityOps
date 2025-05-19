@@ -198,6 +198,47 @@ export const logSshOutput = async (sessionId: string, data: string) => {
   }
 };
 
+// 保存AI输出记录
+export const logAiOutput = async (sessionId: string, data: any): Promise<void> => {
+  try {
+    const key = `session:aiOut:${sessionId}`;
+    const logData = {
+      timestamp: Date.now(),
+      data: data
+    };
+    await redisClient.lPush(key, JSON.stringify(logData));
+    console.log(`[Redis Logger] Saved AI output for session ${sessionId}:`, logData);
+  } catch (err) {
+    console.error(`[Redis Logger] Error saving AI output for session ${sessionId}:`, err);
+  }
+};
+
+// 获取AI输出记录
+export const getAiOutput = async (sessionId: string): Promise<any[]> => {
+  try {
+    const key = `session:aiOut:${sessionId}`;
+    const length = await redisClient.lLen(key);
+    if (length === 0) return [];
+    
+    const records = await redisClient.lRange(key, 0, -1);
+    return records.map(record => JSON.parse(record));
+  } catch (err) {
+    console.error(`[Redis Logger] Error getting AI output for session ${sessionId}:`, err);
+    return [];
+  }
+};
+
+// 清除AI输出记录
+export const clearAiOutput = async (sessionId: string): Promise<void> => {
+  try {
+    const key = `session:aiOut:${sessionId}`;
+    await redisClient.del(key);
+    console.log(`[Redis Logger] Cleared AI output for session ${sessionId}`);
+  } catch (err) {
+    console.error(`[Redis Logger] Error clearing AI output for session ${sessionId}:`, err);
+  }
+};
+
 export const redisLogger = async (req: RedisLoggerRequest, res: Response, next: NextFunction) => {
   // 生成或获取会话ID
   if (!req.sessionId) {
