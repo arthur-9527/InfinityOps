@@ -1,5 +1,11 @@
 import winston from 'winston';
 import { config } from '../config';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// 获取当前文件的目录路径
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // 日志级别类型
 type LogLevel = 'error' | 'warn' | 'info' | 'debug';
@@ -20,6 +26,15 @@ const customFormat = winston.format.printf(({ level, message, timestamp, module 
   return `${timestamp} ${color}[${level.toUpperCase()}]${colors.reset}${moduleStr}: ${message}`;
 });
 
+// 确保日志目录存在
+const logDir = path.join(__dirname, '../../logs');
+import { mkdirSync } from 'fs';
+try {
+  mkdirSync(logDir, { recursive: true });
+} catch (error) {
+  console.error('Error creating log directory:', error);
+}
+
 // 创建日志记录器
 export const logger = winston.createLogger({
   level: config.logging.level,
@@ -30,7 +45,14 @@ export const logger = winston.createLogger({
     customFormat
   ),
   transports: [
-    new winston.transports.Console()
+    new winston.transports.Console(),
+    new winston.transports.File({
+      filename: path.join(logDir, 'error.log'),
+      level: 'error'
+    }),
+    new winston.transports.File({
+      filename: path.join(logDir, 'combined.log')
+    })
   ],
 });
 

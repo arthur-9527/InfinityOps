@@ -153,6 +153,13 @@ class WebSocketService {
   }
 
   /**
+   * Check if WebSocket is currently connected
+   */
+  public isConnected(): boolean {
+    return this.status === 'connected' && this.socket !== null && this.socket.readyState === WebSocket.OPEN;
+  }
+
+  /**
    * Get the connection details
    */
   public getConnectionInfo(): any {
