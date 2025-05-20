@@ -412,10 +412,95 @@ async function processRawInput(command: string, clientId: string): Promise<any> 
     };
   }
   
+<<<<<<< HEAD
   const session = sshService.getSession(sessionInfo.sessionId);
   if (!session) {
     logger.error(`SSH session not found for client ${clientId}`);
     clientSshSessions.delete(clientId);
+=======
+  // 检查是否需要直接处理确认响应
+  const isConfirmationResponse = /(^|\s+)(y|yes|n|no)(\s+|$)/i.test(command.trim().toLowerCase());
+  
+  // 使用AI分析命令
+  const analysisResult = await commandAnalysisService.analyzeCommand(command, path, history);
+  
+  // 如果命令是对前一个风险命令的确认响应
+  if (analysisResult.isAwaitingConfirmation === false && isConfirmationResponse) {
+    // 这是确认响应的结果，特殊处理
+    if (analysisResult.shouldExecute) {
+      // 用户确认执行命令
+      // 获取原始命令
+      const originalCommand = analysisResult.command || '';
+      
+      // 获取SSH会话
+      const session = sshService.getSession(sessionInfo.sessionId);
+      if (!session) {
+        logger.error(`SSH session not found for client ${clientId}`);
+        clientSshSessions.delete(clientId);
+        return {
+          type: 'terminalResponse',
+          timestamp: Date.now(),
+          payload: {
+            command: originalCommand,
+            output: 'SSH session not found or expired. Please reconnect.',
+            success: false
+          }
+        };
+      }
+      
+      try {
+        // 执行原始命令
+        logger.info(`Executing confirmed command via SSH: ${originalCommand}`);
+        
+        // 立即将命令发送到SSH会话
+        session.write(originalCommand + '\n');
+        
+        // 返回空响应，SSH会显示结果
+        return {
+          type: 'commandSent',
+          timestamp: Date.now(),
+          payload: {
+            command: originalCommand,
+            success: true,
+            isConfirmed: true,
+            immediateExecution: true  // 标记为立即执行
+          }
+        };
+      } catch (error) {
+        logger.error(`Error sending confirmed command to SSH: ${error}`);
+        return {
+          type: 'terminalResponse',
+          timestamp: Date.now(),
+          payload: {
+            command: originalCommand,
+            output: `Error sending command: ${(error as Error).message}`,
+            success: false
+          }
+        };
+      }
+    } else {
+      // 用户拒绝执行命令
+      return {
+        type: 'terminalResponse',
+        timestamp: Date.now(),
+        payload: {
+          command: command,
+          output: analysisResult.content,
+          analysisType: 'command_cancelled',
+          path,
+          success: false
+        }
+      };
+    }
+  }
+  
+  // 对于普通的分析结果，继续原有流程
+  // 根据AI分析结果处理命令
+  if (analysisResult.type === 'ai_response') {
+    // AI回答类型直接返回AI的回答
+    updateClientHistory(clientId, command, analysisResult.content);
+    
+>>>>>>> 0969888 (优化风险命令确认交互，实现直接输入y/n无需回车的交互模式)
     return {
       type: 'terminalResponse',
       timestamp: Date.now(),
@@ -424,6 +509,7 @@ async function processRawInput(command: string, clientId: string): Promise<any> 
         success: false
       }
     };
+<<<<<<< HEAD
   }
   
   try {
@@ -433,6 +519,42 @@ async function processRawInput(command: string, clientId: string): Promise<any> 
       const code = char.charCodeAt(0);
       if (code < 32 || code === 127) { // 控制字符
         return `[CTRL:${code}]`;
+=======
+  } else if (analysisResult.type === 'bash_execution') {
+    // 检查是否需要确认
+    if (analysisResult.requireConfirmation && analysisResult.isAwaitingConfirmation) {
+      return {
+        type: 'terminalResponse',
+        timestamp: Date.now(),
+        payload: {
+          command,
+          output: analysisResult.content,
+          analysisType: 'confirmation_required',
+          path,
+          success: true,
+          awaitingConfirmation: true,
+          showPrompt: false // 不显示新的命令提示符
+        }
+      };
+    }
+    
+    // 普通命令执行
+    if (analysisResult.shouldExecute) {
+      // 获取SSH会话
+      const session = sshService.getSession(sessionInfo.sessionId);
+      if (!session) {
+        logger.error(`SSH session not found for client ${clientId}`);
+        clientSshSessions.delete(clientId);
+        return {
+          type: 'terminalResponse',
+          timestamp: Date.now(),
+          payload: {
+            command,
+            output: 'SSH session not found or expired. Please reconnect.',
+            success: false
+          }
+        };
+>>>>>>> 0969888 (优化风险命令确认交互，实现直接输入y/n无需回车的交互模式)
       }
       return char;
     }).join('');
@@ -467,6 +589,24 @@ async function processRawInput(command: string, clientId: string): Promise<any> 
           }
         }
       }
+<<<<<<< HEAD
+=======
+    } else {
+      // AI认为不应执行的命令，显示AI的解释
+      updateClientHistory(clientId, command, analysisResult.content);
+      
+      return {
+        type: 'terminalResponse',
+        timestamp: Date.now(),
+        payload: {
+          command,
+          output: analysisResult.content,
+          analysisType: 'command_warning',
+          path,
+          success: false
+        }
+      };
+>>>>>>> 0969888 (优化风险命令确认交互，实现直接输入y/n无需回车的交互模式)
     }
     
     // 直接发送原始输入到SSH会话
@@ -483,6 +623,21 @@ async function processRawInput(command: string, clientId: string): Promise<any> 
       }
     };
   }
+<<<<<<< HEAD
+=======
+
+  // 如果无法确定类型，返回错误
+  return {
+    type: 'terminalResponse',
+    timestamp: Date.now(),
+    payload: {
+      command,
+      output: 'Error: Unable to determine command type',
+      path,
+      success: false
+    }
+  };
+>>>>>>> 0969888 (优化风险命令确认交互，实现直接输入y/n无需回车的交互模式)
 }
 
 // 添加终端状态变更函数

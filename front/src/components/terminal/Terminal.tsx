@@ -6,6 +6,7 @@ import { WebLinksAddon } from 'xterm-addon-web-links';
 import { terminalService } from '../../services/terminal.service';
 import { webSocketService } from '../../services/websocket.service';
 
+
 interface TerminalProps {
   initialCommand?: string;
 }
@@ -24,12 +25,16 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
   const [sshConnectionDetails, setSshConnectionDetails] = useState<any>(null);
   const [passwordBuffer, setPasswordBuffer] = useState<string>('');
   const [passwordMode, setPasswordMode] = useState<boolean>(false);
+<<<<<<< HEAD
   const [ctrlCPressed, setCtrlCPressed] = useState<boolean>(false);
   const ctrlCTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [inInteractiveMode, setInInteractiveMode] = useState<boolean>(false);
   const [currentInteractiveCommand, setCurrentInteractiveCommand] = useState<string>('');
   const [terminalState, setTerminalState] = useState<'normal' | 'interactive' | 'config'>('normal');
   const lastKeyRef = useRef<{key: string, time: number} | null>(null);
+=======
+  const [awaitingConfirmation, setAwaitingConfirmation] = useState<boolean>(false);
+>>>>>>> 0969888 (优化风险命令确认交互，实现直接输入y/n无需回车的交互模式)
   
   // Main effect for setup and websocket connections
   useEffect(() => {
@@ -43,6 +48,7 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
 
     // 监听从服务器返回的消息
     const unsubscribeMessage = webSocketService.onMessage('terminalResponse', (message) => {
+<<<<<<< HEAD
       if (xtermRef.current && message.payload) {
         // 在终端显示服务器返回的响应
         xtermRef.current.write(`${message.payload.output}\r\n`);
@@ -53,6 +59,38 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
           // 显示新的提示符
           xtermRef.current.write(terminalService.getPrompt());
         }
+=======
+      if (!message || !message.payload) return;
+      
+      const { output, success, analysisType, showPrompt = true, awaitingConfirmation: isAwaitingConfirmation = false } = message.payload;
+      
+      // 更新SSH路径
+      if (message.payload.path) {
+        terminalService.setPath(message.payload.path);
+      }
+      
+      // 显示终端输出
+      if (output) {
+        xtermRef.current.write(`${output}\r\n`);
+      }
+      
+      // 如果在等待确认，设置等待确认状态
+      if (isAwaitingConfirmation) {
+        setAwaitingConfirmation(true);
+        // 不显示提示符，等待用户确认
+        return;
+      } else if (awaitingConfirmation && analysisType === 'command_cancelled') {
+        // 如果用户取消了命令，清除等待确认状态
+        setAwaitingConfirmation(false);
+      } else {
+        // 其他情况，确保不处于等待确认状态
+        setAwaitingConfirmation(false);
+      }
+      
+      // 如果需要显示提示符，才显示
+      if (showPrompt) {
+        xtermRef.current.write(terminalService.getPrompt());
+>>>>>>> 0969888 (优化风险命令确认交互，实现直接输入y/n无需回车的交互模式)
       }
     });
     
@@ -416,6 +454,88 @@ const Terminal: React.FC<TerminalProps> = ({ initialCommand }) => {
       const isBackspace = code === 127 || code === 8; // Backspace key
       const isUpArrow = data === '\x1b[A';
       const isDownArrow = data === '\x1b[B';
+<<<<<<< HEAD
+=======
+      
+      // Special handling for password mode
+      if (passwordMode) {
+        if (isEnter) {
+          // Submit password
+          term.write('\r\n');
+          submitSshPassword();
+          return;
+        } else if (isBackspace) {
+          // Handle backspace in password mode (don't show character deletion)
+          if (passwordBuffer.length > 0) {
+            setPasswordBuffer(prev => prev.substring(0, prev.length - 1));
+          }
+          return;
+        } else if (!isUpArrow && !isDownArrow) {
+          // Add character to password buffer but don't display
+          setPasswordBuffer(prev => prev + data);
+          return;
+        }
+      }
+      
+      // 特殊处理确认模式
+      if (awaitingConfirmation) {
+        // 检查是否是y或n的输入（不区分大小写）
+        const lowerChar = data.toLowerCase();
+        
+        if (lowerChar === 'y' || lowerChar === 'n') {
+          // 显示输入的字符
+          term.write(data);
+          // 自动换行
+          term.write('\r\n');
+          
+          // 立即发送确认响应
+          sendCommandToServer(lowerChar);
+          
+          // 清空输入并退出确认模式
+          setInputBuffer('');
+          setAwaitingConfirmation(false);
+          return;
+        } else if (isEnter) {
+          // 如果按下回车，根据已输入的内容确认，若没有输入则默认取消
+          term.write('\r\n');
+          
+          const input = inputBuffer.trim().toLowerCase();
+          if (input === 'y' || input === 'yes') {
+            sendCommandToServer('y');
+          } else if (input === 'n' || input === 'no' || input === '') {
+            sendCommandToServer('n');
+          } else {
+            // 无效输入，默认取消
+            sendCommandToServer('n');
+          }
+          
+          setInputBuffer('');
+          return;
+        } else if (isBackspace) {
+          // 允许删除输入
+          if (inputBuffer.length > 0) {
+            const lastChar = inputBuffer[inputBuffer.length - 1];
+            const charWidth = getCharWidth(lastChar);
+            
+            for (let i = 0; i < charWidth; i++) {
+              term.write('\b \b');
+            }
+            
+            setInputBuffer(prev => prev.substring(0, prev.length - 1));
+          }
+          return;
+        } else if (/^[a-zA-Z0-9\s]$/.test(data)) {
+          // 允许输入字母、数字和空格
+          term.write(data);
+          setInputBuffer(prev => prev + data);
+          return;
+        }
+        
+        // 忽略其他输入
+        return;
+      }
+      
+>>>>>>> 0969888 (优化风险命令确认交互，实现直接输入y/n无需回车的交互模式)
       if (isEnter) {
         // Process the command
         term.write('\r\n');

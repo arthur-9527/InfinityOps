@@ -63,6 +63,15 @@ export class TerminalService {
   }
 
   /**
+   * Sets the current path
+   */
+  setPath(path: string): void {
+    if (path) {
+      this.path = path;
+    }
+  }
+
+  /**
    * Returns the current username
    */
   getUsername(): string {
